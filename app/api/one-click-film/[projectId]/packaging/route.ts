@@ -2,15 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { requireAccessContext } from '@/lib/media-core/access-context';
+import { syncGenerationStatus } from '@/lib/one-click-film/generation';
 import { getRunForProject } from '@/lib/one-click-film/store';
-import { listPackaging, listPackagingPreviewSources, parsePackagingOptions, preparePackaging, updatePackagingDraft, type TextCue } from '@/lib/one-click-film/packaging';
-import { listFilmBgm, recognizeFilmPackagingSubtitles } from '@/lib/one-click-film/packaging-render';
-import { getFilmPreview, readFilmBody } from '@/lib/one-click-film/composition';
-import { listReviews } from '@/lib/one-click-film/review';
+import { extractFilmPackagingPoints, listPackaging, listPackagingPreviewSources, parsePackagingOptions, preparePackaging, updatePackagingDraft, type TextCue } from '@/lib/one-click-film/packaging';
+import { filmPreviewFontCss, listFilmBgm, recognizeFilmPackagingSubtitles } from '@/lib/one-click-film/packaging-render';
+import { getFilmPreview, playableFilmBody, readFilmBody, readyHdPaths, sourceIdsForBody } from '@/lib/one-click-film/composition';
+import { listReviews, reviewForPlayback, undoableMergeId } from '@/lib/one-click-film/review';
 import { packagingOverlayConfig } from '@/lib/one-click-film/packaging-edit';
 import { packagingPreviewHtml } from '@/lib/media-core/packaging-preview';
 import { buildPackagingVars, sanitizePointCues } from '@/lib/media-core/packaging-vars';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
+import { validatePackagingStickers } from '@/lib/media-core/packaging-stickers';
+import { isExecutionDeferredError, isExecutionUnknownError } from '@/lib/media-core/execution/waiting';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 
@@ -26,6 +29,7 @@ async function __teamRouteGET(
     const access = requireAccessContext();
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
     const run = getRunForProject(db, projectId);
+    if (run) await syncGenerationStatus(db, run);
     return NextResponse.json({
       packaging: run ? listPackaging(db, run) : [],
       previews: run ? listPackagingPreviewSources(db, run) : [],
@@ -68,33 +72,68 @@ async function __teamRoutePOST(
       return NextResponse.json({ packaging: listPackaging(db, run) });
     }
     if (action === 'recognize-subtitles') {
-      await recognizeFilmPackagingSubtitles(db, run, entryCode, Number(body.revision));
+      try {
+        await recognizeFilmPackagingSubtitles(db, run, entryCode, Number(body.revision));
+      } catch (error) {
+        if (isExecutionDeferredError(error)) return NextResponse.json({ subtitleWaiting: true }, { status: 202 });
+        if (isExecutionUnknownError(error)) throw new OneClickFilmError('conflict', '口播识别已提交，正在等待结果核对。', 409);
+        throw error;
+      }
       return NextResponse.json({ packaging: listPackaging(db, run) });
     }
+    if (action === 'extract-points') {
+      const record = listPackaging(db, run).find(item => item.entryCode === entryCode);
+      return NextResponse.json({ pointCues: extractFilmPackagingPoints(db, run, entryCode, record?.subtitlesPrepared ? record.subtitleCues : []) });
+    }
     if (action === 'open' || action === 'preview') {
-      const film = readFilmBody(db, run, entryCode);
-      if (!film) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      const saved = readFilmBody(db, run, entryCode);
+      if (!saved) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      const film = await playableFilmBody(saved);
       const durationSec = film.frames / FINAL_EDIT_FPS;
       if (action === 'preview') {
         const options = parsePackagingOptions(body.options);
+        if (body.options && typeof body.options === 'object' && 'assetStickers' in body.options) {
+          try { options.assetStickers = validatePackagingStickers(body.options.assetStickers, film.frames); }
+          catch (error) { throw new OneClickFilmError('invalid_input', error instanceof Error ? error.message : '贴纸数据无效'); }
+        }
         const title = typeof body.title === 'string' ? body.title.slice(0, 60) : '';
         const config = packagingOverlayConfig({ options, template: options.template, title, pointCues: sanitizePointCues(body.pointCues) ?? [] });
         if (!config.enabled) return NextResponse.json({ html: '' });
         const coverSec = options.cover ? FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS : 0;
-        return NextResponse.json({ html: packagingPreviewHtml({
+        const html = packagingPreviewHtml({
           config, vars: buildPackagingVars({ subtitleCues: [], overrides: config.varsOverrides }),
           totalSec: durationSec + coverSec, coverSec, edit: true, staticCover: true, coverEnabled: options.cover,
-        }) });
+        });
+        return NextResponse.json({ html: html.replace('</head>', `<style>${filmPreviewFontCss(config)}</style></head>`) });
       }
       let record = listPackaging(db, run).find((item) => item.entryCode === entryCode);
       if (!record) {
         preparePackaging(db, { run, options: body.options, codes: [entryCode], allowPreview: true });
         record = listPackaging(db, run).find((item) => item.entryCode === entryCode);
       }
+      let subtitleWarning: string | undefined;
+      let subtitleWaiting = false;
+      if (body.prepareSubtitles === true && record?.options.subtitles && !record.subtitlesPrepared && film.snapshot.soundMode !== 'none') {
+        try {
+          await recognizeFilmPackagingSubtitles(db, run, entryCode, record.revision);
+        } catch (error) {
+          if (error instanceof OneClickFilmError && error.code === 'conflict') throw error;
+          subtitleWaiting = isExecutionDeferredError(error);
+          subtitleWarning = subtitleWaiting ? '口播识别正在等待名额，空出后自动对时。'
+            : isExecutionUnknownError(error) ? '口播识别已提交，正在等待结果核对。'
+              : '口播对时未完成。可在字幕面板校对草稿或重新识别。';
+        }
+        record = listPackaging(db, run).find(item => item.entryCode === entryCode);
+      }
       const review = listReviews(db, run).find((item) => item.jobId === film.jobId);
+      if (!review) throw new OneClickFilmError('not_found', '审片记录尚未准备好', 404);
+      const hdReady = film.draft && readyHdPaths(db, run, film).size === sourceIdsForBody(film).length;
+      const url = await getFilmPreview(db, run, film, hdReady);
+      const playback = reviewForPlayback(review, Math.round(durationSec * 1e6));
       return NextResponse.json({
-        record,
-        media: { url: await getFilmPreview(db, run, film, film.draft && film.hdApproved), durationSec, shots: review?.shots ?? [] },
+        record, subtitleWarning, subtitleWaiting,
+        media: { url, durationSec, shots: playback.shots, signature: film.signature, sharedFonts: access.kind === 'team', review: { ...playback, entryId: film.entryId, draft: film.draft,
+          hdApproved: film.hdApproved, hdVideoUrl: hdReady ? url : null, undoMergeId: undoableMergeId(db, review) } },
       });
     }
 

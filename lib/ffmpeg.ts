@@ -302,6 +302,8 @@ function probeWithFfmpeg(filePath: string): Promise<number> {
 
 export interface VideoMediaProbe {
   durationUs: number;
+  /** Length of the picture stream, when supplied separately by the container. */
+  videoDurationUs?: number;
   /** 显示宽（已按旋转元数据归一：±90/270° 时与 height 交换） */
   width: number;
   /** 显示高（同上） */
@@ -340,7 +342,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
     try {
       const child = spawn(
         resolveFfprobeCandidatePath(),
-        ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt,sample_rate,width,height,r_frame_rate:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
+        ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt,sample_rate,width,height,r_frame_rate,duration:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
         { windowsHide: true }
       );
       let out = '';
@@ -384,7 +386,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
         if (signal?.aborted) { finish(aborted()); return; }
         if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
-          const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; r_frame_rate?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
+          const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; r_frame_rate?: string; duration?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
           const stream = parsed.streams?.find(({ codec_type }) => codec_type === 'video')
             ?? parsed.streams?.find(({ width, height }) => Number(width) > 0 && Number(height) > 0);
           const audioStream = parsed.streams?.find(({ codec_type }) => codec_type === 'audio');
@@ -396,6 +398,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
           const swap = rotation % 180 === 90;
           finish({
             durationUs: Math.round(durationSec * 1_000_000),
+            videoDurationUs: Number(stream.duration) > 0 ? Math.round(Number(stream.duration) * 1e6) : undefined,
             width: Number(swap ? stream.height : stream.width) || 0,
             height: Number(swap ? stream.width : stream.height) || 0,
             fps: parseFrameRateFraction(stream.r_frame_rate),

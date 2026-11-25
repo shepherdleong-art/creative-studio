@@ -1,3 +1,8 @@
+import { FONT_SLOTS, FONT_SLOT_ALIASES, materializeFontBuffer } from '../media-core/packaging-font.ts';
+import { resolveSystemFontFile } from '../media-core/system-fonts.ts';
+import type { FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
+import sharp from 'sharp';
+import type { TextStyle } from '../media-core/cover-types.ts';
 import { countFilmFrames } from './frames.ts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -12,9 +17,9 @@ import { scanBgmTracks } from '../media-core/bgm-catalog.ts';
 import { bgmStreamLoopCount } from '../media-core/bgm-loop.ts';
 import { renderVideoPackaging } from '../media-core/packaging-render.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../media-core/render-contract.ts';
-import { bodyFrame, filmAudioSignature, filmStoragePath, readFilmBody, readyHdPaths, renderFilmBody, type FilmBody } from './composition.ts';
-import { listPackaging, packagingEligibility, type PackagingRecord, type TextCue } from './packaging.ts';
-import { DEFAULT_SUBTITLE_POSITION, packagingOverlayConfig, splitTimedSubtitle, STICKERS, type Position, type StickerCue } from './packaging-edit.ts';
+import { bodyFrame, filmAudioSignature, filmStoragePath, playableFilmBody, readFilmBody, readyHdPaths, renderFilmBody, type FilmBody } from './composition.ts';
+import { extractFilmPackagingPoints, listPackaging, packagingEligibility, type PackagingRecord, type TextCue } from './packaging.ts';
+import { filmCaptionSvg, isUneditedFilmPointSticker, resolveFilmSubtitleStyle, packagingOverlayConfig, splitTimedSubtitle, syncFilmPointStickers, STICKERS, type Position, type StickerCue } from './packaging-edit.ts';
 import { OneClickFilmError } from './errors.ts';
 import type { OneClickFilmRun } from './store.ts';
 
@@ -38,12 +43,13 @@ function subtitleCues(words: AlignmentWordTiming[], duration: number): TextCue[]
       text += value;
       return { at: text.length, sec: word.endUs / 1e6 };
     });
-    const startSec = Math.max(0, group[0]!.startUs / 1e6);
+    const startSec = Math.max(cues.at(-1)?.endSec ?? 0, group[0]!.startUs / 1e6);
     const endSec = Math.min(duration, group.at(-1)!.endUs / 1e6);
     if (text && endSec > startSec) cues.push(...splitTimedSubtitle({ id: `sub-${cues.length}`, text, startSec, endSec }, timestamps));
     group = [];
   };
   for (const word of words) {
+    if (group.length && word.startUs - group.at(-1)!.endUs > 450_000) flush();
     group.push(word);
     if (group.map((item) => item.text).join('').length >= 18 || /[。！？.!?]$/.test(word.text)) flush();
   }
@@ -51,23 +57,26 @@ function subtitleCues(words: AlignmentWordTiming[], duration: number): TextCue[]
   return cues;
 }
 
-async function timedSubtitles(db: Database.Database, run: OneClickFilmRun, body: FilmBody, workDir: string): Promise<TextCue[]> {
-  if (body.snapshot.soundMode === 'none') return [];
+async function timedSubtitles(db: Database.Database, run: OneClickFilmRun, body: FilmBody, workDir: string) {
+  if (body.snapshot.soundMode === 'none') return { cues: [], words: [] };
+  const whole = body.edits.find((edit) => edit.whole);
   const source = body.snapshot.narrationPath ? filmStoragePath(body.snapshot.narrationPath)
-    : body.edits.find((edit) => edit.whole)?.file ?? body.originalPath;
-  if (!body.snapshot.narrationPath && !(await probeVideoMedia(source)).hasAudio) return [];
+    : whole?.file ?? body.originalPath;
+  if (!body.snapshot.narrationPath && !(await probeVideoMedia(source)).hasAudio) return { cues: [], words: [] };
   const configuredTranscription = createOpenAiTranscriptionAdapter();
   const adapter = configuredTranscription.configured ? configuredTranscription : createVolcFlashAsrAdapter(process.env, db);
   if (!adapter.configured) throw new Error('口播字幕需要配置豆包语音 Key 或独立语音转录服务。');
   const duration = body.frames / FINAL_EDIT_FPS;
-  const audioInput = `${filmAudioSignature(body)}-${body.frames}`;
+  const audioInput = `${filmAudioSignature(body)}-${body.frames}${whole?.trim && !body.snapshot.narrationPath ? '-trimmed' : ''}`;
   // 已受理的转录可能在包装请求结束后恢复，给它留一个按音轨身份固定的输入。
   const speech = path.join(path.dirname(workDir), 'speech', `${audioInput}.wav`);
   try {
     await fs.access(speech);
   } catch {
     const scratch = path.join(workDir, 'speech.wav');
-    await runFfmpeg(['-y', '-i', source, '-t', String(duration), '-vn', '-ac', '1', '-ar', '16000', scratch], { timeoutMs: 60_000 });
+    const trimSec = body.snapshot.narrationPath ? 0 : (whole?.trim ?? 0) / FINAL_EDIT_FPS;
+    await runFfmpeg(['-y', '-i', source, ...(trimSec ? ['-ss', String(trimSec)] : []),
+      '-t', String(duration), '-vn', '-ac', '1', '-ar', '16000', scratch], { timeoutMs: 60_000 });
     await fs.mkdir(path.dirname(speech), { recursive: true });
     await fs.rename(scratch, speech).catch(async (error: NodeJS.ErrnoException) => {
       if (!['EEXIST', 'EPERM'].includes(error.code ?? '')) throw error;
@@ -79,11 +88,27 @@ async function timedSubtitles(db: Database.Database, run: OneClickFilmRun, body:
     execution: { taskId: body.jobId, step: 'one-click-film-subtitles', inputRevision: audioInput,
       scope: { resourceType: 'project', resourceId: run.projectId } },
   });
-  return subtitleCues(result.words, duration);
+  const words = result.words.filter(word => Number.isFinite(word.startUs) && Number.isFinite(word.endUs) && word.endUs > word.startUs && word.text.trim())
+    .sort((a, b) => a.startUs - b.startUs || a.endUs - b.endUs);
+  const cues = subtitleCues(words, duration);
+  if (body.snapshot.soundMode === 'tts' && body.snapshot.narration?.trim() && !cues.length) {
+    throw new Error('未能从当前旁白取得有效时间戳，请重新识别。');
+  }
+  return { cues, words };
 }
 
 /** Refresh the editable cues without rendering a packaged MP4. */
-export async function recognizeFilmPackagingSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number) {
+export function recognizeFilmPackagingSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number) {
+  const key = `subtitles/${run.id}/${code}/${revision}`;
+  let work = pending.get(key);
+  if (!work) {
+    work = recognizeRevisionSubtitles(db, run, code, revision).finally(() => pending.delete(key));
+    pending.set(key, work);
+  }
+  return work;
+}
+
+async function recognizeRevisionSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number) {
   const body = readFilmBody(db, run, code);
   const record = listPackaging(db, run).find((item) => item.entryCode === code);
   if (!body || !record || record.revision !== revision) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
@@ -91,11 +116,18 @@ export async function recognizeFilmPackagingSubtitles(db: Database.Database, run
   await fs.mkdir(directory, { recursive: true });
   const work = await fs.mkdtemp(path.join(directory, 'subtitle-'));
   try {
-    const cues = await timedSubtitles(db, run, body, work);
+    const playable = await playableFilmBody(body);
+    const { cues, words } = await timedSubtitles(db, run, playable, work);
     if (readFilmBody(db, run, code)?.signature !== body.signature) throw new OneClickFilmError('conflict', '成片已更新，请重新识别字幕', 409);
+    const points = record.options.decoration && !record.options.pointCuesEdited
+      ? extractFilmPackagingPoints(db, run, code, cues, words) : record.pointCues;
+    const currentStickers = record.options.assetStickers ?? [];
+    const assetStickers = currentStickers.some(isUneditedFilmPointSticker) && !record.options.pointCuesEdited
+      ? syncFilmPointStickers(currentStickers, points, playable.frames)
+      : record.options.assetStickers;
     const saved = db.prepare(
-      "UPDATE one_click_film_packaging SET subtitleCuesJson=?, audioSignature=?, status='pending', revision=revision+1, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?",
-    ).run(JSON.stringify(cues), filmAudioSignature(body), record.id, revision);
+      "UPDATE one_click_film_packaging SET subtitleCuesJson=?, pointCuesJson=?, optionsJson=?, title=?, audioSignature=?, status='pending', revision=revision+1, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?",
+    ).run(JSON.stringify(cues), JSON.stringify(points), JSON.stringify({ ...record.options, assetStickers }), record.title, filmAudioSignature(body), record.id, revision);
     if (!saved.changes) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
   } finally {
     await fs.rm(work, { recursive: true, force: true });
@@ -121,12 +153,35 @@ function assTime(seconds: number): string {
     + `${String(Math.floor(centiseconds / 100) % 60).padStart(2, '0')}.${String(centiseconds % 100).padStart(2, '0')}`;
 }
 
-async function writeSubtitleFile(workDir: string, cues: TextCue[], offset: number, position: Position): Promise<string> {
-  const events = cues.map((cue) => {
-    const text = cue.text.replace(/[{}\\]/g, '').replace(/[\r\n]+/g, ' ');
-    return `Dialogue: 0,${assTime(cue.startSec + offset)},${assTime(cue.endSec + offset)},Film,,0,0,0,,{${assPosition(position)}}${text}`;
-  });
-  return writeAss(workDir, 'captions.ass', events);
+// PNGs use the same single-line SVG as the monitor. One timed image stream also
+// handles gaps without opening a separate FFmpeg input for each subtitle.
+async function burnCaptions(video: string, work: string, cues: TextCue[], style: TextStyle, offsetFrames: number, totalFrames: number) {
+  const { width, height } = await probeVideoMedia(video);
+  const frameAt = (sec: number) => Math.max(0, Math.min(totalFrames, offsetFrames + Math.ceil(sec * FINAL_EDIT_FPS - 1e-6)));
+  const ranges = cues.map(cue => ({ start: frameAt(cue.startSec), end: frameAt(cue.endSec), text: cue.text }));
+  const boundaries = [...new Set([0, totalFrames, ...ranges.flatMap(cue => [cue.start, cue.end])])].sort((a, b) => a - b);
+  const manifest = ['ffconcat version 1.0'];
+  const files = new Map<string, string>();
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const start = boundaries[i];
+    const caption = ranges.find(cue => start >= cue.start && start < cue.end)?.text || '';
+    let name = files.get(caption);
+    if (!name) {
+      name = `caption-${files.size}.png`;
+      await sharp(Buffer.from(filmCaptionSvg(style, caption, width, height))).png().toFile(path.join(work, name));
+      files.set(caption, name);
+    }
+    manifest.push(`file '${name}'`, `option framerate ${FINAL_EDIT_FPS}`,
+      `duration ${((boundaries[i + 1] - start) / FINAL_EDIT_FPS).toFixed(8)}`);
+  }
+  const track = path.join(work, 'captions.ffconcat');
+  await fs.writeFile(track, manifest.join('\n') + '\n');
+  const target = path.join(work, 'captioned.mp4');
+  await runFfmpeg(['-y', '-i', video, '-f', 'concat', '-safe', '0', '-i', track,
+    '-filter_complex', '[0:v][1:v]overlay=0:0[video]', '-map', '[video]', '-map', '0:a',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', target],
+  { timeoutMs: 180_000 });
+  await fs.rename(target, video);
 }
 
 async function writeAss(workDir: string, name: string, events: string[]): Promise<string> {
@@ -141,9 +196,38 @@ async function writeAss(workDir: string, name: string, events: string[]): Promis
   return file.replace(/\\/g, '/').replace(/^([A-Za-z]):/, '$1\\:').replace(/'/g, "\\'");
 }
 
+// 团队模式只读取已公开给成员的字体目录。预览与导出共用同一个受控字体 ID。
+function sharedFontId(file?: string) {
+  return file?.match(/^\/api\/system-fonts\/([a-f0-9]{64})\/file$/)?.[1];
+}
+
+export function filmPreviewFontCss(config: FinalEditPackagingConfig) {
+  return FONT_SLOTS.map(slot => {
+    const id = sharedFontId(config[`${slot}Font`]?.file);
+    return id ? `@font-face{font-family:"${FONT_SLOT_ALIASES[slot]}";src:url("/api/system-fonts/${id}/file");font-weight:100 900;}` : '';
+  }).join('');
+}
+
+async function resolveRenderFonts(config: FinalEditPackagingConfig) {
+  for (const slot of FONT_SLOTS) {
+    const key = `${slot}Font` as const;
+    const font = config[key];
+    const id = sharedFontId(font?.file);
+    if (!font || !id) continue;
+    const file = resolveSystemFontFile(id);
+    if (!file) throw new Error(`团队字体「${font.family}」已不可用，请重新选择。`);
+    config[key] = { ...font, file: materializeFontBuffer(await fs.readFile(file), path.extname(file), slot) };
+  }
+}
+
 async function renderPackagingRevision(db: Database.Database, run: OneClickFilmRun, record: PackagingRecord, refreshSubtitles: boolean) {
-  const body = readFilmBody(db, run, record.entryCode);
-  if (!body || !packagingEligibility(db, run, record.entryCode).ready) throw new Error('请先通过当前成片的审片');
+  const saved = readFilmBody(db, run, record.entryCode);
+  if (!saved || !packagingEligibility(db, run, record.entryCode).ready) throw new Error('请先通过当前成片的审片');
+  const body = await playableFilmBody(saved);
+  const useSubtitles = record.options.subtitles && body.snapshot.soundMode !== 'none';
+  if (useSubtitles && record.subtitleCues.length && !refreshSubtitles && !record.subtitlesPrepared) {
+    throw new Error('请先在字幕面板完成口播对时，或关闭口播字幕后再导出。');
+  }
   const audioSignature = filmAudioSignature(body);
   const previousAudioSignature = db.prepare('SELECT audioSignature FROM one_click_film_packaging WHERE id=?').pluck().get(record.id);
   const directory = filmStoragePath(path.join('one-click-film', 'packaging', run.id));
@@ -157,19 +241,15 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     const offset = introFrames / FINAL_EDIT_FPS;
     const totalFrames = body.frames + introFrames;
     const totalSec = totalFrames / FINAL_EDIT_FPS;
-    const refreshTiming = refreshSubtitles || audioSignature !== previousAudioSignature;
-    const useSubtitles = record.options.subtitles && body.snapshot.soundMode !== 'none';
     const subtitle = useSubtitles
-      ? refreshTiming ? await timedSubtitles(db, run, body, work) : record.subtitleCues : [];
+      ? refreshSubtitles ? (await timedSubtitles(db, run, body, work)).cues : record.subtitleCues : [];
     const bgm = record.options.bgm ? (await listFilmBgm(db)).find((track) => !record.options.bgmId || track.id === record.options.bgmId) : undefined;
     if (record.options.bgm && !bgm) throw new Error('曲库还没有可用的配乐，请选用已有配乐或关闭 BGM。');
     const overlay = packagingOverlayConfig(record);
-    const cues = subtitle.length ? await writeSubtitleFile(work, subtitle, offset, record.options.subtitlePosition ?? DEFAULT_SUBTITLE_POSITION) : '';
     const stickers = record.options.stickers?.length
       ? await writeStickerFile(work, record.options.stickers, offset, body.frames / FINAL_EDIT_FPS) : '';
     const video = [introFrames ? `tpad=start=${introFrames}:start_mode=clone` : 'null',
-      ...(stickers ? [`subtitles=filename='${stickers}'`] : []),
-      ...(cues && !overlay.enabled ? [`subtitles=filename='${cues}'`] : [])].join(',');
+      ...(stickers ? [`subtitles=filename='${stickers}'`] : [])].join(',');
     const audio = [`[0:a]aresample=48000,adelay=${Math.round(offset * 48000)}S:all=1[a0]`];
     if (bgm) audio.push(`[1:a]aresample=48000,volume=${record.options.bgmVolume / 100},atrim=duration=${totalSec.toFixed(8)}[music]`,
       '[a0][music]amix=inputs=2:duration=first:normalize=0[audio]');
@@ -184,18 +264,14 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     if (overlay.enabled) {
       const coverPath = path.join(work, 'cover.jpg');
       if (record.options.cover) await runFfmpeg(['-y', '-i', bodyFile, '-frames:v', '1', '-update', '1', coverPath]);
+      await resolveRenderFonts(overlay);
       await renderVideoPackaging({
         videoPath, coverPath, totalSec, staticCover: true, coverEnabled: record.options.cover,
         config: overlay,
       });
-      if (cues) {
-        const captioned = path.join(work, 'captioned.mp4');
-        await runFfmpeg(['-y', '-i', videoPath, '-vf', `subtitles=filename='${cues}'`,
-          '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', captioned],
-        { timeoutMs: 180_000 });
-        await fs.rename(captioned, videoPath);
-      }
     }
+    if (subtitle.length) await burnCaptions(videoPath, work, subtitle,
+      resolveFilmSubtitleStyle(record.options.subtitleStyle, record.options.subtitlePosition), introFrames, totalFrames);
     const result = await probeVideoMedia(videoPath);
     if (await countFilmFrames(videoPath) !== totalFrames || bodyFrame(result.durationUs) !== totalFrames || result.fps !== FINAL_EDIT_FPS || !result.hasAudio) {
       throw new Error('包装产物帧率、长度或音轨校验失败');
@@ -209,8 +285,9 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
       }
       const updated = db.prepare(`
         UPDATE one_click_film_packaging SET status='ready', relativePath=?, sourceSignature=?, audioSignature=?, subtitleCuesJson=?,
-          title=?, pointCuesJson=?, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?
-      `).run(relative, body.signature, useSubtitles ? audioSignature : previousAudioSignature,
+          title=?, pointCuesJson=?, optionsJson=json_set(optionsJson, '$.captionRenderer', 'single-line'),
+          errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?
+      `).run(relative, body.signature, useSubtitles && refreshSubtitles ? audioSignature : previousAudioSignature,
         JSON.stringify(useSubtitles ? subtitle : record.subtitleCues), record.title, JSON.stringify(record.pointCues),
         record.id, record.revision);
       if (!updated.changes) throw new Error('已保存了更新的包装版本。');
@@ -231,14 +308,22 @@ export async function renderFilmPackaging(db: Database.Database, run: OneClickFi
   if (expectedRevision !== undefined && record.revision !== expectedRevision) {
     throw new OneClickFilmError('conflict', '包装草稿已更新，请确认后再导出', 409);
   }
-  if (record.ready) return;
+  // A requested re-export can render an old caption layout into a new file. Keep
+  // its previously published revision available until the replacement succeeds.
+  if (record.ready) {
+    const renderer = db.prepare("SELECT json_extract(optionsJson,'$.captionRenderer') FROM one_click_film_packaging WHERE id=?")
+      .pluck().get(record.id);
+    if (!record.options.subtitles || renderer === 'single-line') return;
+  }
   const key = `${run.id}/${record.id}/${record.revision}`;
   let work = pending.get(key);
   if (!work) {
     work = renderPackagingRevision(db, run, record, refreshSubtitles).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      db.prepare("UPDATE one_click_film_packaging SET status='failed', errorMessage=? WHERE id=? AND revision=?")
-        .run(message.slice(0, 500), record.id, record.revision);
+      if (!record.ready) {
+        db.prepare("UPDATE one_click_film_packaging SET status='failed', errorMessage=? WHERE id=? AND revision=?")
+          .run(message.slice(0, 500), record.id, record.revision);
+      }
       throw error;
     }).finally(() => pending.delete(key));
     pending.set(key, work);

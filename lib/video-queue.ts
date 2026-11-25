@@ -30,6 +30,7 @@ import {
   deliverVideoReferenceMedia,
   precheckSeedanceReferenceMedia,
   precheckVideoReferenceDeliveryMedia,
+  prepareSeedanceSourceReference,
   VideoReferenceMediaError,
 } from './video-providers/reference-media.ts';
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
@@ -395,6 +396,7 @@ interface VideoJobReferenceAsset {
   mimeType: string;
   byteSize: number;
   durationSec: number | null;
+  imageBuffer?: Buffer<ArrayBuffer>;
 }
 
 function readVideoJobReferenceAssets(db: ReturnType<typeof getDb>, job: Pick<VideoJobRecord, 'id' | 'projectId'>): VideoJobReferenceAsset[] {
@@ -416,7 +418,11 @@ async function prepareReferenceSubmitRequest(
 ): Promise<SubmitReferenceVideoRequest> {
   if (!job.aspectRatio || !job.resolution) throw new Error('全能参考任务缺少冻结的输出比例或清晰度');
   const assets = readVideoJobReferenceAssets(db, job);
-  if (assets.length === 0) assets.push(await readVideoSourceReference(db, job.sourceImageId, job.projectId));
+  if (assets.length === 0) {
+    const source = await readVideoSourceReference(db, job.sourceImageId, job.projectId);
+    const imageBuffer = job.model === SEEDANCE_25 ? await prepareSeedanceSourceReference(source.path, source.byteSize) : undefined;
+    assets.push(imageBuffer ? { ...source, imageBuffer, mimeType: 'image/jpeg', byteSize: imageBuffer.length } : source);
+  }
   if (new Set(assets.map((asset) => asset.id)).size !== assets.length) throw new Error('全能参考素材不能重复');
 
   const capability = videoReferenceCapability(providerType, job.model);
@@ -428,6 +434,7 @@ async function prepareReferenceSubmitRequest(
       mimeType: asset.mimeType,
       byteSize: asset.byteSize,
       durationSec: asset.durationSec,
+      imageBuffer: asset.imageBuffer,
     };
     const rule = capability[asset.kind];
     const problems = precheckVideoReferenceDeliveryMedia(media, {
@@ -461,6 +468,7 @@ async function prepareReferenceSubmitRequest(
       durationSec: asset.durationSec,
       requireCos: providerType === 'openai-video',
       isFrameImage: false,
+      imageBuffer: asset.imageBuffer,
       imageFallback: 'data-url',
     }, signal);
     references.push({

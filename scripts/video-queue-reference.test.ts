@@ -108,9 +108,11 @@ try {
 
   project('company');
   provider('company-25', 'openai-video', 'doubao-seedance-2-5-260628', 'http://127.0.0.1:4000');
-  referenceAsset('company-image', 'company', 'image');
+  const oversizedPath = path.join(root, 'oversized.jpg');
+  await sharp({ create: { width: 6287, height: 4192, channels: 3, background: '#ffffff' } }).jpeg().toFile(oversizedPath);
+  const original = fs.readFileSync(oversizedPath);
+  db.prepare("UPDATE image_assets SET originalPath=? WHERE id='poster-company'").run(oversizedPath);
   job({ id: 'company-job', projectId: 'company', providerId: 'company-25', model: 'doubao-seedance-2-5-260628' });
-  link('company-job', 0, 'company-image');
   process.env.CREATIVE_STUDIO_COS_SECRET_ID = 'test-id';
   process.env.CREATIVE_STUDIO_COS_SECRET_KEY = 'test-key';
   process.env.CREATIVE_STUDIO_COS_DOMAIN = 'cos.example.test';
@@ -119,17 +121,25 @@ try {
     status: 'ready', reason: '', proxyAvailable: true, cosConfigured: true, startedAt: null,
   }));
   let companyRequest: SubmitReferenceVideoRequest | undefined;
-  let cosCalls = 0;
-  globalThis.fetch = (async () => {
-    cosCalls += 1;
-    return new Response(null, { status: 206 });
+  let upload: Buffer | undefined;
+  globalThis.fetch = (async (_url, input) => {
+    if (input?.method === 'PUT') {
+      assert.ok(Buffer.isBuffer(input.body));
+      upload = input.body;
+      return new Response(null, { status: 200 });
+    }
+    return new Response(null, { status: 404 });
   }) as typeof fetch;
   providers.registerTestVideoAdapter('openai-video', failedAdapter((request) => {
     companyRequest = request;
     return { providerTaskId: 'remote-company', rawResponse: null };
   }));
   await queue.runVideoQueue({ projectId: 'company', concurrency: 1, timeoutMs: 60_000 });
-  assert.ok(cosCalls > 0, '公司参考必须实际经过模拟 COS 交付');
+  assert.ok(upload, '超限冻结来源图应规整后经过 COS 交付');
+  const delivered = await sharp(upload).metadata();
+  assert.ok(delivered.width! <= 6000 && delivered.height! <= 6000);
+  assert.ok(Math.abs(delivered.width! / delivered.height! - 6287 / 4192) < 0.001);
+  assert.ok(fs.readFileSync(oversizedPath).equals(original), '视频参考副本不应修改原素材');
   assert.ok(companyRequest);
   assert.ok(companyRequest.references.every((reference) => reference.url.startsWith('https://cos.example.test/')));
   assert.ok(companyRequest.references.every((reference) => reference.url.includes('q-sign-algorithm=sha1')));

@@ -7,16 +7,16 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv } from 'node:util';
 import { ensureDevApiRoutes } from './runtime/dev-route-readiness.mjs';
+import { localPreviewTarget } from './runtime/local-preview-target.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const previewRoot = path.join(root, 'outputs', 'local-preview');
-const port = 3410;
+const { appRoot, dataRoot: previewRoot, deploymentId, port, projectId } = localPreviewTarget(root, process.argv.includes('--default'));
 const origin = 'http://127.0.0.1:' + port;
-const deploymentId = 'windows-local-preview';
+const entryUrl = origin + (projectId ? '/one-click-film/' + encodeURIComponent(projectId) : '/team/login');
 const credentialPath = path.join(previewRoot, 'run', 'control-credential.json');
 const command = process.argv[2] || 'start';
 
-const proxyPort = 4410;
+const proxyPort = port + 1000;
 
 function previewEnvironment() {
   const envFile = path.join(root, '.env.local');
@@ -40,8 +40,13 @@ function startGateway() {
     console.warn('公司网关组件缺失，请配置本机 config.yaml 和 .venv-litellm。');
     return;
   }
-  // 健康门禁在数据根检查配置；预览副本始终跟随本机配置源。
-  fs.copyFileSync(configFile, path.join(previewRoot, 'config.yaml'));
+  // 默认预览跟随源码配置。打开已有项目时保留它原先的网关配置。
+  const targetConfig = path.join(previewRoot, 'config.yaml');
+  if (projectId && fs.existsSync(targetConfig) && !fs.readFileSync(configFile).equals(fs.readFileSync(targetConfig))) {
+    console.warn('项目和本机的公司网关配置不同，本次保留项目配置并跳过网关启动。');
+    return;
+  }
+  if (!projectId || !fs.existsSync(targetConfig)) fs.copyFileSync(configFile, targetConfig);
   const result = runGatewayScript('start-stack.ps1', ['-SkipApp', '-AppPort', String(port), '-ProxyPort', String(proxyPort)]);
   if (result.error || result.status !== 0) console.warn('公司网关启动失败，预览继续启动，请检查上方提示。');
 }
@@ -82,10 +87,10 @@ async function operation(action, body) {
 
 function openBrowser() {
   if (process.argv.includes('--no-open')) return;
-  const browser = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', origin + '/team/login'], {
+  const browser = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', entryUrl], {
     detached: true, stdio: 'ignore', windowsHide: true,
   });
-  browser.on('error', () => console.error('请在浏览器打开 ' + origin + '/team/login'));
+  browser.on('error', () => console.error('请在浏览器打开 ' + entryUrl));
   browser.unref();
 }
 
@@ -109,10 +114,10 @@ async function stop(expectedInstance) {
   throw new Error('本地预览正在退出，请稍后重试。');
 }
 
-function runAdminCommand(env, action) {
+function runAdminCommand(env, action, employeeId) {
   const result = spawnSync(process.execPath, [
     path.join(root, 'scripts', 'team-server', action + '-admin.mjs'),
-    '--employee-id', '0001',
+    '--employee-id', employeeId,
   ], { cwd: root, env, stdio: 'inherit', windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error('本地管理员初始化失败，请检查上方错误。');
@@ -121,12 +126,12 @@ function runAdminCommand(env, action) {
 async function start() {
   if (await isListening()) {
     await operation('status');
-    await ensureDevApiRoutes(root);
-    console.log('本地预览已运行：' + origin);
+    await ensureDevApiRoutes(appRoot);
+    console.log('本地预览已运行：' + entryUrl);
     openBrowser();
     return;
   }
-  const next = path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next');
+  const next = path.join(appRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
   if (!fs.existsSync(next)) throw new Error('缺少开发依赖，请在项目目录运行 npm ci --include=dev。');
   const instanceId = crypto.randomUUID();
   const env = {
@@ -142,19 +147,23 @@ async function start() {
     CREATIVE_STUDIO_TEAM_LOCAL_HTTP: '1',
     CREATIVE_STUDIO_CONTROL_CREDENTIAL_FILE: credentialPath,
     CREATIVE_STUDIO_SERVER_RELEASE_ID: 'local-preview',
+    CREATIVE_STUDIO_PREVIEW_FILM_PROJECT: projectId,
   };
   const { default: Database } = await import('better-sqlite3');
   const dbPath = path.join(previewRoot, 'data', 'workbench.db');
-  let hasAdmin = false;
+  let adminId;
   if (fs.existsSync(dbPath)) {
     const db = new Database(dbPath, { readonly: true });
     try {
       const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_users'").get();
-      hasAdmin = Boolean(table && db.prepare("SELECT 1 FROM team_users WHERE role='admin' LIMIT 1").get());
+      adminId = table && db.prepare("SELECT employeeId FROM team_users WHERE role='admin' ORDER BY (employeeId='0001') DESC, createdAt LIMIT 1").pluck().get();
+      if (projectId && !db.prepare("SELECT 1 FROM projects WHERE id=? AND workflowType='one_click_film'").get(projectId)) {
+        throw new Error('所选数据目录中找不到这个一键成片项目。');
+      }
     } finally { db.close(); }
   }
-  if (!hasAdmin) runAdminCommand(env, 'init');
-  if (process.argv.includes('--recover-admin') && hasAdmin) runAdminCommand(env, 'recover');
+  if (!adminId) runAdminCommand(env, 'init', '0001');
+  if (process.argv.includes('--recover-admin') && adminId) runAdminCommand(env, 'recover', adminId);
 
   fs.mkdirSync(path.dirname(credentialPath), { recursive: true });
   fs.writeFileSync(credentialPath, JSON.stringify({
@@ -163,11 +172,11 @@ async function start() {
   startGateway();
   console.log('COS：' + (['CREATIVE_STUDIO_COS_SECRET_ID', 'CREATIVE_STUDIO_COS_SECRET_KEY', 'CREATIVE_STUDIO_COS_DOMAIN'].every(key => env[key]?.trim()) ? '已配置' : '未配置完整'));
   console.log('豆包配音：' + (env.DOUBAO_TTS_API_KEY?.trim() ? '已配置' : '未配置'));
-  console.log('\n林视 · 本地预览\n地址：' + origin + '\n本地管理员工号：0001\n数据目录：' + previewRoot);
+  console.log('\n林视 · 本地预览\n地址：' + entryUrl + '\n本地管理员工号：' + (adminId || '0001') + '\n数据目录：' + previewRoot);
   console.log('修改代码后刷新页面即可。保持此窗口开启，结束时双击“停止本地预览.cmd”。');
   console.log('忘记本地密码时，停止后运行：启动本地预览.cmd --recover-admin\n');
   const server = spawn(process.execPath, [next, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
-    cwd: root, env, stdio: 'inherit', windowsHide: true,
+    cwd: appRoot, env, stdio: 'inherit', windowsHide: true,
   });
   let startupError;
   server.on('error', error => { startupError = error; });
@@ -198,12 +207,12 @@ async function start() {
       await delay(1000);
     }
     if (!ready) throw new Error('预览服务在四分钟内未就绪，请检查上方错误。');
-    const routes = await ensureDevApiRoutes(root);
+    const routes = await ensureDevApiRoutes(appRoot);
     console.log(`接口路由已就绪：${routes.count} 个${routes.recovered ? '（已自动补全首次扫描）' : ''}`);
     const login = await fetch(origin + '/team/login', { signal: AbortSignal.timeout(120_000) });
     if (!login.ok) throw new Error('登录页加载失败（HTTP ' + login.status + '）。');
     await login.text();
-    console.log('\n预览已就绪：' + origin + '/team/login');
+    console.log('\n预览已就绪：' + entryUrl);
     openBrowser();
     const exitCode = await exited;
     stopGateway();
@@ -217,7 +226,7 @@ async function start() {
 try {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('本地预览需要 Node.js 22 或更高版本。');
   if (command === 'stop') await stop();
-  else if (['start', '--no-open', '--recover-admin'].includes(command)) await start();
+  else if (['start', '--no-open', '--recover-admin', '--default'].includes(command)) await start();
   else throw new Error('用法：启动本地预览.cmd [--recover-admin]，或双击“停止本地预览.cmd”。');
 } catch (error) {
   console.error('本地预览：' + error.message);

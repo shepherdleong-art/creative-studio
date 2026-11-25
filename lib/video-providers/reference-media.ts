@@ -4,6 +4,7 @@ import { probeDurationSec, probeVideoMedia } from '../ffmpeg.ts';
 import {
   getCosVideoCompressOptions,
   isCosMediaConfigured,
+  tryUploadBufferToCosAndSign,
   tryUploadToCosAndSign,
 } from '../cos-media.ts';
 import { isPrivateOrLocalHttpUrl, resolvePublicImageUrlWithSource } from '../local-image-url.ts';
@@ -17,6 +18,17 @@ export interface VideoReferenceMediaInput {
   mimeType: string;
   byteSize: number | null;
   durationSec: number | null;
+  imageBuffer?: Buffer<ArrayBuffer>;
+}
+
+const SEEDANCE_REFERENCE_MIN_SIDE = 300;
+const SEEDANCE_REFERENCE_MAX_SIDE = 6000;
+const SEEDANCE_REFERENCE_MIN_RATIO = 0.4;
+
+function validSeedanceReferenceDimensions(width: number, height: number): boolean {
+  return Math.min(width, height) >= SEEDANCE_REFERENCE_MIN_SIDE
+    && Math.max(width, height) <= SEEDANCE_REFERENCE_MAX_SIDE
+    && Math.min(width, height) >= Math.max(width, height) * SEEDANCE_REFERENCE_MIN_RATIO;
 }
 
 export const VIDEO_REFERENCE_DELIVERY_LIMITS: Record<VideoReferenceMediaKind, {
@@ -28,6 +40,26 @@ export const VIDEO_REFERENCE_DELIVERY_LIMITS: Record<VideoReferenceMediaKind, {
   video: { mimeTypes: ['video/mp4', 'video/quicktime'], maxBytes: 200 * 1024 * 1024, maxDurationSec: 15 },
   audio: { mimeTypes: ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4'], maxBytes: 15 * 1024 * 1024, maxDurationSec: 15 },
 };
+
+/** Prepare a delivery-only copy of an out-of-range frozen source image. */
+export async function prepareSeedanceSourceReference(file: string, bytes: number): Promise<Buffer<ArrayBuffer> | undefined> {
+  const image = sharp(file);
+  const { autoOrient: { width, height } } = await image.metadata();
+  const byteLimit = VIDEO_REFERENCE_DELIVERY_LIMITS.image.maxBytes;
+  if (validSeedanceReferenceDimensions(width, height) && bytes < byteLimit) return;
+
+  const maxSide = bytes >= byteLimit ? 4096 : SEEDANCE_REFERENCE_MAX_SIDE;
+  const scale = Math.min(maxSide / Math.max(width, height), Math.max(1, SEEDANCE_REFERENCE_MIN_SIDE / Math.min(width, height)));
+  const scaledWidth = Math.round(width * scale);
+  const scaledHeight = Math.round(height * scale);
+  const buffer = await image.autoOrient().flatten({ background: '#fff' }).resize({
+    width: Math.max(SEEDANCE_REFERENCE_MIN_SIDE, scaledWidth, Math.ceil(scaledHeight * SEEDANCE_REFERENCE_MIN_RATIO)),
+    height: Math.max(SEEDANCE_REFERENCE_MIN_SIDE, scaledHeight, Math.ceil(scaledWidth * SEEDANCE_REFERENCE_MIN_RATIO)),
+    fit: 'contain',
+    background: '#fff',
+  }).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+  return buffer as Buffer<ArrayBuffer>;
+}
 
 export interface VideoReferenceDeliveryPrecheckOptions {
   mimeTypes?: ReadonlyArray<string>;
@@ -63,7 +95,7 @@ export async function precheckSeedanceReferenceMedia(input: VideoReferenceMediaI
   if (!input.absolutePath) return [];
   const problems: string[] = [];
   const dimensions = (width: number, height: number) => {
-    if (!width || !height || width < 300 || height < 300 || width > 6000 || height > 6000 || width / height < 0.4 || width / height > 2.5) {
+    if (!validSeedanceReferenceDimensions(width, height)) {
       problems.push('宽高须为 300–6000 像素，宽高比须在 0.4–2.5 之间');
     }
   };
@@ -74,9 +106,9 @@ export async function precheckSeedanceReferenceMedia(input: VideoReferenceMediaI
   }
   if (model === SEEDANCE_25) {
     if (input.kind === 'image') {
-      const metadata = await sharp(input.absolutePath).metadata().catch(() => probeVideoMedia(input.absolutePath!));
+      const metadata = await sharp(input.imageBuffer ?? input.absolutePath).metadata().catch(() => probeVideoMedia(input.absolutePath!));
       dimensions(metadata.width ?? 0, metadata.height ?? 0);
-      if ((input.byteSize ?? Infinity) >= 30 * 1024 * 1024) problems.push('图片须小于 30 MB');
+      if ((input.byteSize ?? Infinity) >= VIDEO_REFERENCE_DELIVERY_LIMITS.image.maxBytes) problems.push('图片须小于 30 MB');
     } else if (input.kind === 'video') {
       const probe = await probeVideoMedia(input.absolutePath);
       dimensions(probe.width, probe.height);
@@ -120,12 +152,14 @@ export async function deliverVideoReferenceMedia(
   const cosConfigured = isCosMediaConfigured();
   if (cosConfigured) {
     try {
-      const signed = await tryUploadToCosAndSign(
-        request.absolutePath,
-        request.mimeType,
-        request.imageCompression === false ? { compress: false }
-          : request.kind === 'image' && request.isFrameImage ? getCosVideoCompressOptions() : undefined,
-      );
+      const signed = request.imageBuffer
+        ? await tryUploadBufferToCosAndSign(request.imageBuffer, request.mimeType, { compress: false })
+        : await tryUploadToCosAndSign(
+          request.absolutePath,
+          request.mimeType,
+          request.imageCompression === false ? { compress: false }
+            : request.kind === 'image' && request.isFrameImage ? getCosVideoCompressOptions() : undefined,
+        );
       if (signed) return signed;
     } catch (error) {
       if (request.requireCos) {
@@ -152,7 +186,8 @@ export async function deliverVideoReferenceMedia(
     );
   }
   if (request.imageFallback === 'data-url') {
-    return `data:${request.mimeType};base64,${fs.readFileSync(request.absolutePath).toString('base64')}`;
+    const buffer = request.imageBuffer ?? fs.readFileSync(request.absolutePath);
+    return `data:${request.mimeType};base64,${buffer.toString('base64')}`;
   }
   const resolution = resolvePublicImageUrlWithSource(request.absolutePath);
   if (!resolution || (resolution.source === 'network' && isPrivateOrLocalHttpUrl(resolution.url))) {

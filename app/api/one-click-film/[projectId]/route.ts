@@ -56,6 +56,7 @@ async function __teamRouteGET(
         analyses: [],
         analysis: null,
         entries: [],
+        retiredEntries: [],
       });
     }
     const current = getCurrentAnalysis(db, run);
@@ -78,6 +79,7 @@ async function __teamRouteGET(
         points: listSellingPoints(db, current.id),
       } : null,
       entries: listEntries(db, run.id),
+      retiredEntries: listEntries(db, run.id, 'retired'),
     });
   } catch (error) {
     return jsonError(error);

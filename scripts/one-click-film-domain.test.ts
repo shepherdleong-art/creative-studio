@@ -1,6 +1,7 @@
 // 一键成片 01–04：数量/结构契约、卖点来源校验、条目身份与单条重做隔离。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { register } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -8,17 +9,19 @@ import Database from 'better-sqlite3';
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocf-domain-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
+register('./typescript-extension-loader.mjs', import.meta.url);
 
 const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
 const {
   parseEntryCount, parseStructurePlan, structureAt, entryCode, parseSoundMode,
+  parseModelPreset, parseModelSelection, inferModelFromContext, resolveModelSelection, formatModelLabel,
 } = await import('../lib/one-click-film/contract.ts');
-const { buildPrompt, retimePromptText, replaceVoiceSection } = await import('../lib/one-click-film/prompt.ts');
+const { buildPrompt, retimePromptText, replaceVoiceSection, replaceModelLine } = await import('../lib/one-click-film/prompt.ts');
 const { validateConfirmation } = await import('../lib/one-click-film/selling-points.ts');
 const {
   applyScriptPlan, confirmAnalysis, confirmEntry, createAnalysisVersion, getEntry,
-  getOrCreateRun, listEntries, listSellingPoints, markAnalysisSucceeded, redraftEntry,
-  replaceSellingPoints, updateEntryDraft,
+  getOrCreateRun, listEntries, listScriptRevisions, listSellingPoints, markAnalysisSucceeded, redraftEntry,
+  replaceSellingPoints, restoreRetiredScripts, updateEntryDraft,
 } = await import('../lib/one-click-film/store.ts');
 
 // ── 契约边界 ──
@@ -38,6 +41,29 @@ const batch = parseStructurePlan({ mode: 'batch', structure: 'problem' });
 assert.deepEqual([0, 1].map((index) => structureAt(batch, index)), ['problem', 'problem']);
 const individual = parseStructurePlan({ mode: 'individual', choices: ['scene', 'auto', 'problem'] });
 assert.deepEqual([0, 1, 2].map((index) => structureAt(individual, index)), ['scene', 'result', 'problem']);
+
+// ── 出镜人物契约与自动识别 ──
+assert.equal(parseModelPreset(undefined), 'auto');
+assert.equal(parseModelPreset('child'), 'child');
+assert.throws(() => parseModelPreset('alien'), /出镜人物/);
+assert.throws(() => parseModelSelection('custom', '   '), /出镜人物描述/);
+assert.deepEqual(parseModelSelection('custom', ' 5岁小女孩，穿米色家居服 '), {
+  preset: 'custom',
+  custom: '5岁小女孩，穿米色家居服',
+});
+assert.equal(inferModelFromContext({ product: '米氏家居儿童小沙发' }), 'child');
+assert.equal(inferModelFromContext({ product: '小沙发', points: ['适合亲子阅读陪读'] }), 'parent_child');
+assert.equal(inferModelFromContext({ suggestedModel: 'adult_male', product: '儿童沙发' }), 'adult_male');
+assert.deepEqual(
+  resolveModelSelection({ preset: 'auto' }, { product: '儿童小沙发' }),
+  { preset: 'child', custom: '' },
+);
+assert.deepEqual(
+  resolveModelSelection({ preset: 'adult_female' }, { suggestedModel: 'child', product: '儿童小沙发' }),
+  { preset: 'adult_female', custom: '' },
+);
+assert.equal(formatModelLabel({ preset: 'auto' }, 'child'), '自动匹配（儿童）');
+assert.equal(formatModelLabel({ preset: 'custom', custom: '4岁小男孩' }), '4岁小男孩');
 
 // ── 卖点来源校验 ──
 assert.throws(
@@ -78,6 +104,39 @@ const silent = replaceVoiceSection(retimed, { sound: 'none', narration: '', dura
 assert.match(silent, /【声音要求】/);
 assert.doesNotMatch(silent, /【配音安排】/);
 assert.match(silent, /【分镜 · 6 镜】/, '换声音方式不得重写分镜');
+
+const childPrompt = buildPrompt({
+  subject: {
+    product: '儿童小沙发',
+    appearance: '客厅儿童角，米白色皮面',
+    points: ['皮面耐折约五万次'],
+    genre: '淘系种草',
+    model: { preset: 'child', custom: '' },
+  },
+  structure: 'scene', sound: 'native', title: '家里总怕沙发掉皮',
+  angle: '日常场景 → 使用体验', story: '小朋友坐上小沙发翻看绘本。',
+  narration: '给娃买的小沙发，皮面很耐折。', durationSec: 15, aspectRatio: '3:4',
+});
+assert.match(childPrompt, /人物：同一位约 4–7 岁儿童（小朋友）/);
+assert.match(childPrompt, /小朋友走进客厅儿童角/);
+
+const productOnlyPrompt = buildPrompt({
+  subject: {
+    product: '米白色小沙发',
+    appearance: '客厅一角',
+    points: ['皮面细腻'],
+    genre: '淘系种草',
+    model: { preset: 'none', custom: '' },
+  },
+  structure: 'scene', sound: 'native', title: '质感细节',
+  angle: '纯产品展示', story: '环绕展示皮面纹理。',
+  narration: '看这个皮面纹理很细腻。', durationSec: 15, aspectRatio: '3:4',
+});
+assert.match(productOnlyPrompt, /人物：无出镜人物/);
+assert.doesNotMatch(productOnlyPrompt, /人物走进/);
+
+const replacedCustomPrompt = replaceModelLine(childPrompt, { preset: 'custom', custom: '5岁穿米色家居服的小女孩' });
+assert.match(replacedCustomPrompt, /人物：5岁穿米色家居服的小女孩/);
 
 // ── 数据库与条目身份 ──
 // 共享升级 gate 会为迁移创建已验证备份，内存库无法备份，因此用临时文件库。
@@ -153,7 +212,11 @@ const f01Revisions = db.prepare(`SELECT COUNT(*) AS n FROM one_click_film_script
 assert.ok(f01Revisions.n >= 1, '确认时写入脚本修订历史');
 
 const f02Before = getEntry(db, run.id, 'F02');
+const f02Edited = updateEntryDraft(db, { run, code: 'F02', outline: '未确认的手改大纲' });
 const f02Redrafted = redraftEntry(db, { run, code: 'F02' });
+const history = listScriptRevisions(db, run.id, 'F02');
+assert.deepEqual(history.map(record => record.outline), [f02Redrafted.outline, f02Edited.outline, f02Before.outline]);
+assert.deepEqual(listScriptRevisions(db, 'another-run', 'F02'), []);
 assert.equal(f02Redrafted.status, 'pending', '重做后回到待确认');
 assert.equal(f02Redrafted.structure, 'problem', '重做沿用原结构');
 assert.deepEqual(f02Redrafted.sellingPointsSnapshot, f02Before.sellingPointsSnapshot, '重做沿用已选卖点');
@@ -173,9 +236,25 @@ const reduced = applyScriptPlan(db, {
   plan: { count: 1, plan: { mode: 'auto' }, soundMode: 'native' },
 });
 assert.deepEqual(reduced.removed, ['F02']);
+assert.deepEqual(listEntries(db, run.id, 'retired').map(entry => entry.id), [f02Before.id]);
+assert.equal(listEntries(db, run.id, 'all')[1]?.promptText, f02Redrafted.promptText);
+const { generatePlanCopies } = await import('../lib/one-click-film/script-generation.ts');
+const reusable = await generatePlanCopies(db, {
+  run, analysis: { ...analysis, confirmedProductName: '云朵床' }, points: listSellingPoints(db, analysis.id),
+  plan: { count: 2, plan: { mode: 'individual', choices: ['auto', 'problem'] }, soundMode: 'native' },
+});
+assert.equal(reusable.size, 0, '按原结构加回条目不重新调用模型');
 assert.deepEqual(reduced.kept, ['F01']);
 assert.equal(getEntry(db, run.id, 'F01').id, f01Before.id);
 assert.equal(getEntry(db, run.id, 'F01').outline, f01HandEdited.outline);
+
+// Restore the original per-entry structure even when the active batch now uses auto.
+const originalBatch = restoreRetiredScripts(db, run, 'F02');
+assert.deepEqual(originalBatch[1], f02Redrafted);
+assert.equal(originalBatch[0]!.scriptConfirmedAt, f01Confirmed.scriptConfirmedAt);
+assert.deepEqual(restoreRetiredScripts(db, run, 'F02'), originalBatch);
+applyScriptPlan(db, { run, analysis: { ...analysis, confirmedProductName: '云朵床' }, points: listSellingPoints(db, analysis.id),
+  plan: { count: 1, plan: { mode: 'auto' }, soundMode: 'native' } });
 
 // 再增回两条：新条目结构按自动搭配，F01 仍不动。
 const restored = applyScriptPlan(db, {
@@ -187,6 +266,9 @@ const restored = applyScriptPlan(db, {
 assert.deepEqual(restored.added, ['F02']);
 assert.deepEqual(restored.kept, ['F01']);
 assert.equal(restored.entries[1]!.structure, 'result');
+assert.equal(restored.entries[1]!.id, f02Before.id);
+assert.equal(restored.entries[1]!.scriptRevision, f02Redrafted.scriptRevision + 1);
+assert.ok(listScriptRevisions(db, run.id, 'F02').some(record => record.promptText === f02Redrafted.promptText));
 
 // 改整批结构：只重写结构变化的条目。F01 本来就是「场景体验」，整批也设为场景体验时保留。
 const structureChange = applyScriptPlan(db, {
@@ -220,7 +302,58 @@ points[0] = { ...points[0]!, text: '卧室里的放松片刻', edited: true };
 replaceSellingPoints(db, analysis.id, points);
 assert.equal(listSellingPoints(db, analysis.id)[0]!.text, '卧室里的放松片刻');
 
-assert.equal(listEntries(db, run.id).length, 2);
+// 出镜人物：整批设置、逐条覆盖与保留单条设置。
+const batchChild = applyScriptPlan(db, {
+  run,
+  analysis: { ...analysis, confirmedProductName: '云朵床', confirmedAt: new Date().toISOString() },
+  points: listSellingPoints(db, analysis.id),
+  plan: { count: 2, plan: { mode: 'batch', structure: 'scene' }, soundMode: 'none', modelPreset: 'child' },
+});
+assert.deepEqual(batchChild.rewritten, ['F01', 'F02']);
+assert.equal(batchChild.entries[0]!.modelPreset, 'child');
+assert.match(batchChild.entries[0]!.promptText, /人物：同一位约 4–7 岁儿童（小朋友）/);
+
+// 仅给 F02 单独换为自定义人物重做，F01 不受影响。
+const f02Custom = redraftEntry(db, {
+  run,
+  code: 'F02',
+  model: { preset: 'custom', custom: '年轻妈妈和4岁宝宝' },
+});
+assert.equal(f02Custom.modelPreset, 'custom');
+assert.equal(f02Custom.modelCustom, '年轻妈妈和4岁宝宝');
+assert.equal(f02Custom.modelSource, 'individual');
+assert.match(f02Custom.promptText, /人物：年轻妈妈和4岁宝宝/);
+assert.equal(getEntry(db, run.id, 'F01').modelPreset, 'child');
+
+// 新增第 3 条并保持单条覆盖：F02 保持自定义，F01 保留儿童，F03 跟随整批儿童。
+const expandedKeepIndividual = applyScriptPlan(db, {
+  run,
+  analysis: { ...analysis, confirmedProductName: '云朵床', confirmedAt: new Date().toISOString() },
+  points: listSellingPoints(db, analysis.id),
+  plan: {
+    count: 3,
+    plan: { mode: 'batch', structure: 'scene' },
+    soundMode: 'none',
+    modelPreset: 'child',
+    preserveIndividualModel: true,
+  },
+});
+assert.deepEqual(expandedKeepIndividual.kept, ['F01', 'F02']);
+assert.deepEqual(expandedKeepIndividual.added, ['F03']);
+assert.equal(getEntry(db, run.id, 'F02').modelPreset, 'custom');
+assert.equal(getEntry(db, run.id, 'F03').modelPreset, 'child');
+
+// 单条保存草稿切人物时，自动同步提示词中的「人物：」行。
+const f03Saved = updateEntryDraft(db, {
+  run,
+  code: 'F03',
+  modelPreset: 'none',
+});
+assert.equal(f03Saved.modelPreset, 'none');
+assert.equal(f03Saved.modelSource, 'individual');
+assert.match(f03Saved.promptText, /人物：无出镜人物/);
+
+assert.equal(listEntries(db, run.id).length, 3);
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log('one-click-film domain tests passed');

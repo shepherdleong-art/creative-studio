@@ -34,6 +34,124 @@ export const SOUND_LABELS: Record<SoundMode, string> = {
   none: '不配音',
 };
 
+export const MODEL_PRESETS = [
+  'auto',
+  'none',
+  'adult_female',
+  'adult_male',
+  'child',
+  'parent_child',
+  'custom',
+] as const;
+export type ModelPreset = (typeof MODEL_PRESETS)[number];
+
+export const MODEL_PRESET_LABELS: Record<ModelPreset, string> = {
+  auto: '自动匹配',
+  none: '无人物（纯产品）',
+  adult_female: '成年女性',
+  adult_male: '成年男性',
+  child: '儿童',
+  parent_child: '亲子互动',
+  custom: '自定义',
+};
+
+export const MODEL_CUSTOM_LIMIT = 80;
+
+export type ModelSource = 'batch' | 'individual';
+
+export interface ModelSelection {
+  preset: ModelPreset;
+  custom: string;
+}
+
+const CONCRETE_SUGGESTED_MODELS = ['none', 'adult_female', 'adult_male', 'child', 'parent_child'] as const;
+type ConcreteSuggestedModel = (typeof CONCRETE_SUGGESTED_MODELS)[number];
+
+export function parseModelPreset(value: unknown): ModelPreset {
+  if (value === undefined || value === null || value === '') return 'auto';
+  if (typeof value === 'string' && (MODEL_PRESETS as readonly string[]).includes(value)) {
+    return value as ModelPreset;
+  }
+  throw new OneClickFilmError('invalid_input', '不支持的出镜人物设置');
+}
+
+export function parseModelSelection(presetValue: unknown, customValue?: unknown): ModelSelection {
+  const preset = parseModelPreset(presetValue);
+  const custom = preset === 'custom' && typeof customValue === 'string'
+    ? customValue.trim().replace(/[\r\n]+/g, ' ').slice(0, MODEL_CUSTOM_LIMIT)
+    : '';
+  if (preset === 'custom' && !custom) {
+    throw new OneClickFilmError('invalid_input', '选择自定义人物时，请填写出镜人物描述');
+  }
+  return { preset, custom };
+}
+
+export function parseSuggestedModel(value: unknown): ConcreteSuggestedModel | '' {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLowerCase();
+  if ((CONCRETE_SUGGESTED_MODELS as readonly string[]).includes(normalized)) {
+    return normalized as ConcreteSuggestedModel;
+  }
+  return '';
+}
+
+const PARENT_CHILD_CUE = /亲子|母婴|陪读|带娃|宝妈|家长.{0,6}(?:宝宝|孩子|小朋友|儿童)|(?:爸爸|妈妈).{0,6}(?:宝宝|孩子|小朋友|儿童)/u;
+const CHILD_CUE = /儿童|宝宝|幼童|幼儿|小朋友|小童|童床|童椅|婴儿|婴幼儿|小学生|低龄|小孩/u;
+
+export function inferModelFromContext(context?: {
+  suggestedModel?: string;
+  product?: string;
+  appearance?: string;
+  sceneClues?: string;
+  points?: string[];
+}): Exclude<ModelPreset, 'custom'> {
+  const suggested = parseSuggestedModel(context?.suggestedModel);
+  if (suggested) return suggested;
+  const text = [
+    context?.product ?? '',
+    context?.appearance ?? '',
+    context?.sceneClues ?? '',
+    ...(context?.points ?? []),
+  ].join(' ');
+  if (PARENT_CHILD_CUE.test(text)) return 'parent_child';
+  if (CHILD_CUE.test(text)) return 'child';
+  return 'auto';
+}
+
+export function resolveModelSelection(
+  selection: { preset: ModelPreset; custom?: string },
+  context?: {
+    suggestedModel?: string;
+    product?: string;
+    appearance?: string;
+    sceneClues?: string;
+    points?: string[];
+  },
+): ModelSelection {
+  if (selection.preset !== 'auto') {
+    return {
+      preset: selection.preset,
+      custom: selection.preset === 'custom'
+        ? (selection.custom ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, MODEL_CUSTOM_LIMIT)
+        : '',
+    };
+  }
+  return { preset: inferModelFromContext(context), custom: '' };
+}
+
+export function formatModelLabel(
+  selection: { preset: ModelPreset; custom?: string },
+  resolvedAuto?: ModelPreset,
+): string {
+  if (selection.preset === 'custom') {
+    return selection.custom?.trim() || MODEL_PRESET_LABELS.custom;
+  }
+  if (selection.preset === 'auto' && resolvedAuto && resolvedAuto !== 'auto') {
+    return `${MODEL_PRESET_LABELS.auto}（${MODEL_PRESET_LABELS[resolvedAuto]}）`;
+  }
+  return MODEL_PRESET_LABELS[selection.preset];
+}
+
 export type StructurePlanMode = 'auto' | 'batch' | 'individual';
 
 export interface StructurePlan {

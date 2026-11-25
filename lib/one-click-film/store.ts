@@ -5,16 +5,22 @@ import { OneClickFilmError } from './errors.ts';
 import {
   entryCode,
   parseEntryCount,
+  parseModelPreset,
+  parseModelSelection,
   parseSoundMode,
   parseStructurePlan,
+  resolveModelSelection,
   SCRIPT_TITLE_LIMIT,
   STRUCTURE_LABELS,
   structureAt,
+  type ModelPreset,
+  type ModelSelection,
+  type ModelSource,
   type SoundMode,
   type StoryStructure,
   type StructurePlan,
 } from './contract.ts';
-import { buildPrompt, replaceVoiceSection, reviewPromptForSettings, type FilmSubject, type PromptReview } from './prompt.ts';
+import { buildPrompt, replaceModelLine, replaceVoiceSection, reviewPromptForSettings, type FilmSubject, type PromptReview } from './prompt.ts';
 import { normalizeEvidenceRefs, type SellingPointDraft } from './selling-points.ts';
 import { requireAccessContext } from '../media-core/access-context.ts';
 
@@ -44,6 +50,7 @@ export interface OneClickFilmAnalysis {
   productName: string;
   appearance: string;
   sceneClues: string;
+  suggestedModel: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   errorCode: string | null;
   errorMessage: string | null;
@@ -64,6 +71,9 @@ export interface OneClickFilmEntry {
   structure: StoryStructure;
   structureSource: 'auto' | 'batch' | 'individual';
   soundMode: SoundMode;
+  modelPreset: ModelPreset;
+  modelCustom: string;
+  modelSource: ModelSource;
   status: 'pending' | 'draft' | 'confirmed';
   title: string;
   outline: string;
@@ -102,6 +112,7 @@ interface AnalysisRow {
   productName: string;
   appearance: string;
   sceneClues: string;
+  suggestedModel?: string;
   status: OneClickFilmAnalysis['status'];
   errorCode: string | null;
   errorMessage: string | null;
@@ -122,6 +133,9 @@ interface EntryRow {
   structure: StoryStructure;
   structureSource: OneClickFilmEntry['structureSource'];
   soundMode: SoundMode;
+  modelPreset?: string;
+  modelCustom?: string;
+  modelSource?: string;
   status: OneClickFilmEntry['status'];
   title: string;
   outline: string;
@@ -163,6 +177,7 @@ function toRun(row: RunRow): OneClickFilmRun {
 function toAnalysis(row: AnalysisRow): OneClickFilmAnalysis {
   return {
     ...row,
+    suggestedModel: row.suggestedModel || '',
     sourceImageIds: stringArray(row.sourceImageIdsJson),
   };
 }
@@ -174,6 +189,9 @@ function toEntry(row: EntryRow): OneClickFilmEntry {
   const previousTitle = narrative?.endsWith(suffix) ? narrative.slice(0, -suffix.length) : '';
   return {
     ...row,
+    modelPreset: parseModelPreset(row.modelPreset),
+    modelCustom: row.modelCustom || '',
+    modelSource: row.modelSource === 'individual' ? 'individual' : 'batch',
     title: (row.title?.trim() || previousTitle || row.productNameSnapshot || '').slice(0, SCRIPT_TITLE_LIMIT),
     promptBaseline,
     sellingPointsSnapshot: stringArray(row.sellingPointsSnapshotJson),
@@ -258,6 +276,7 @@ export function createAnalysisVersion(db: Database.Database, input: {
   productName?: string;
   appearance?: string;
   sceneClues?: string;
+  suggestedModel?: string;
   status?: OneClickFilmAnalysis['status'];
   providerId?: string;
   model?: string;
@@ -271,12 +290,13 @@ export function createAnalysisVersion(db: Database.Database, input: {
     db.prepare(`
       INSERT INTO one_click_film_analyses
         (id, runId, projectId, versionNumber, sourceImageIdsJson, sourceFingerprint, productName, appearance,
-         sceneClues, status, providerId, model, rawJson, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+         sceneClues, suggestedModel, status, providerId, model, rawJson, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
     `).run(
       id, input.run.id, input.run.projectId, nextVersion,
       JSON.stringify(input.sourceImageIds), fingerprintImages(input.sourceImageIds),
       (input.productName ?? '').trim(), (input.appearance ?? '').trim(), (input.sceneClues ?? '').trim(),
+      (input.suggestedModel ?? '').trim(),
       input.status ?? 'queued', input.providerId ?? '', input.model ?? '', now, now,
     );
     db.prepare(`UPDATE one_click_film_runs SET currentAnalysisId = ?, updatedAt = ? WHERE id = ?`)
@@ -316,6 +336,7 @@ export function markAnalysisSucceeded(db: Database.Database, input: {
   productName: string;
   appearance: string;
   sceneClues: string;
+  suggestedModel?: string;
   points: SellingPointDraft[];
   raw: unknown;
   providerId: string;
@@ -325,11 +346,11 @@ export function markAnalysisSucceeded(db: Database.Database, input: {
   db.transaction(() => {
     db.prepare(`
       UPDATE one_click_film_analyses
-      SET productName = ?, appearance = ?, sceneClues = ?, status = 'succeeded',
+      SET productName = ?, appearance = ?, sceneClues = ?, suggestedModel = ?, status = 'succeeded',
           errorCode = NULL, errorMessage = NULL, providerId = ?, model = ?, rawJson = ?, updatedAt = ?
       WHERE id = ?
     `).run(
-      input.productName, input.appearance, input.sceneClues,
+      input.productName, input.appearance, input.sceneClues, input.suggestedModel ?? '',
       input.providerId, input.model, JSON.stringify(input.raw ?? {}), now, input.analysisId,
     );
     replaceSellingPoints(db, input.analysisId, input.points);
@@ -365,7 +386,7 @@ export function confirmAnalysis(db: Database.Database, input: {
       && comparable(listSellingPoints(db, current.id)) === comparable(input.points)) return current;
     const id = current.confirmedAt ? createAnalysisVersion(db, {
       run, sourceImageIds: current.sourceImageIds, productName: input.productName,
-      appearance: current.appearance, sceneClues: current.sceneClues, status: 'succeeded',
+      appearance: current.appearance, sceneClues: current.sceneClues, suggestedModel: current.suggestedModel, status: 'succeeded',
       providerId: current.providerId, model: current.model,
     }).id : current.id;
     const now = new Date().toISOString();
@@ -379,9 +400,32 @@ export function confirmAnalysis(db: Database.Database, input: {
   }).immediate();
 }
 
-export function listEntries(db: Database.Database, runId: string): OneClickFilmEntry[] {
-  return (db.prepare(`SELECT * FROM one_click_film_entries WHERE runId = ? AND retired = 0 ORDER BY ordinal ASC`)
+export function listEntries(db: Database.Database, runId: string, scope: 'active' | 'retired' | 'all' = 'active'): OneClickFilmEntry[] {
+  const filter = scope === 'all' ? '' : scope === 'retired' ? 'AND retired = 1' : 'AND retired = 0';
+  return (db.prepare(`SELECT * FROM one_click_film_entries WHERE runId = ? ${filter} ORDER BY ordinal ASC`)
     .all(runId) as EntryRow[]).map(toEntry);
+}
+
+export function listScriptRevisions(db: Database.Database, runId: string, code: string) {
+  return db.prepare(`SELECT r.id, r.revisionNumber, r.title, r.outline, r.narration, r.promptText, r.createdAt
+    FROM one_click_film_script_revisions r JOIN one_click_film_entries e ON e.id = r.entryId
+    WHERE e.runId = ? AND e.code = ? ORDER BY r.revisionNumber DESC`).all(runId, code) as Array<{
+      id: string; revisionNumber: number; title: string; outline: string; narration: string; promptText: string; createdAt: string;
+    }>;
+}
+
+export function restoreRetiredScripts(db: Database.Database, run: OneClickFilmRun, code: string) {
+  return db.transaction(() => {
+    const target = db.prepare('SELECT ordinal FROM one_click_film_entries WHERE runId=? AND code=?')
+      .pluck().get(run.id, code) as number | undefined;
+    if (!target) throw new OneClickFilmError('not_found', '未找到要恢复的脚本', 404);
+    const outdated = db.prepare(`SELECT code FROM one_click_film_entries WHERE runId=? AND retired=1 AND ordinal<=?
+      AND analysisId IS NOT (SELECT currentAnalysisId FROM one_click_film_runs WHERE id=?) LIMIT 1`).pluck().get(run.id, target, run.id);
+    if (outdated) throw new OneClickFilmError('invalid_input', `${outdated} 使用了旧版分析。可查看原稿，或调高成片数量并应用当前分析。`);
+    db.prepare('UPDATE one_click_film_entries SET retired=0 WHERE runId=? AND retired=1 AND ordinal<=?')
+      .run(run.id, target);
+    return listEntries(db, run.id);
+  }).immediate();
 }
 
 export function getEntry(db: Database.Database, runId: string, code: string): OneClickFilmEntry {
@@ -391,12 +435,25 @@ export function getEntry(db: Database.Database, runId: string, code: string): On
   return toEntry(row);
 }
 
-function subjectOf(analysis: OneClickFilmAnalysis, points: SellingPointDraft[]): FilmSubject {
+function subjectOf(
+  analysis: OneClickFilmAnalysis,
+  points: SellingPointDraft[],
+  model?: ModelSelection,
+): FilmSubject {
+  const product = analysis.confirmedProductName || analysis.productName;
+  const selectedPoints = points.filter((point) => point.selected).map((point) => point.text);
   return {
-    product: analysis.confirmedProductName || analysis.productName,
+    product,
     appearance: analysis.appearance,
-    points: points.filter((point) => point.selected).map((point) => point.text),
+    points: selectedPoints,
     genre: '淘系种草',
+    model: resolveModelSelection(model ?? { preset: 'auto', custom: '' }, {
+      suggestedModel: analysis.suggestedModel,
+      product,
+      appearance: analysis.appearance,
+      sceneClues: analysis.sceneClues,
+      points: selectedPoints,
+    }),
   };
 }
 
@@ -482,6 +539,9 @@ export interface ApplyScriptPlanInput {
   count: unknown;
   plan: unknown;
   soundMode: unknown;
+  modelPreset?: unknown;
+  modelCustom?: unknown;
+  preserveIndividualModel?: boolean;
   durationSec?: number;
   aspectRatio?: string;
   tts?: { providerId?: string; voice?: string; speed?: number };
@@ -511,9 +571,12 @@ export function applyScriptPlan(db: Database.Database, input: {
   const count = parseEntryCount(input.plan.count);
   const plan: StructurePlan = parseStructurePlan(input.plan.plan);
   const sound = parseSoundMode(input.plan.soundMode);
-  const subject = subjectOf(input.analysis, input.points);
-  if (subject.points.length === 0) throw new OneClickFilmError('invalid_input', '请先在分析页勾选至少一项卖点');
-  if (!subject.product) throw new OneClickFilmError('invalid_input', '请先确认产品名称');
+  const batchModel = input.plan.modelPreset !== undefined
+    ? parseModelSelection(input.plan.modelPreset, input.plan.modelCustom)
+    : null;
+  const baseSubject = subjectOf(input.analysis, input.points);
+  if (baseSubject.points.length === 0) throw new OneClickFilmError('invalid_input', '请先在分析页勾选至少一项卖点');
+  if (!baseSubject.product) throw new OneClickFilmError('invalid_input', '请先确认产品名称');
 
   const durationSec = Number.isFinite(Number(input.plan.durationSec)) && Number(input.plan.durationSec) > 0
     ? Math.round(Number(input.plan.durationSec)) : 15;
@@ -535,18 +598,19 @@ export function applyScriptPlan(db: Database.Database, input: {
     }
     const insert = db.prepare(`
       INSERT INTO one_click_film_entries
-        (id, runId, projectId, ordinal, code, structure, structureSource, soundMode, status, title, outline, narration,
-         promptText, promptBaselineJson, promptDurationSec, promptAspectRatio, scriptRevision, scriptConfirmedAt,
-         scriptConfirmedJson, analysisId, productNameSnapshot, sellingPointsSnapshotJson, ttsProviderId, ttsVoice,
-         ttsSpeed, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 0, NULL, '{}', ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, runId, projectId, ordinal, code, structure, structureSource, soundMode, modelPreset, modelCustom,
+         modelSource, status, title, outline, narration, promptText, promptBaselineJson, promptDurationSec,
+         promptAspectRatio, scriptRevision, scriptConfirmedAt, scriptConfirmedJson, analysisId,
+         productNameSnapshot, sellingPointsSnapshotJson, ttsProviderId, ttsVoice, ttsSpeed, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 0, NULL, '{}', ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const update = db.prepare(`
       UPDATE one_click_film_entries
-      SET structure = ?, structureSource = ?, soundMode = ?, status = ?, title = ?, outline = ?, narration = ?, promptText = ?,
-          promptBaselineJson = ?, promptDurationSec = ?, promptAspectRatio = ?, scriptRevision = ?,
-          scriptConfirmedAt = ?, scriptConfirmedJson = '{}', analysisId = ?, productNameSnapshot = ?,
-          sellingPointsSnapshotJson = ?, ttsProviderId = ?, ttsVoice = ?, ttsSpeed = ?, updatedAt = ?
+      SET structure = ?, structureSource = ?, soundMode = ?, modelPreset = ?, modelCustom = ?, modelSource = ?,
+          status = ?, title = ?, outline = ?, narration = ?, promptText = ?, promptBaselineJson = ?,
+          promptDurationSec = ?, promptAspectRatio = ?, scriptRevision = ?, scriptConfirmedAt = ?,
+          scriptConfirmedJson = '{}', analysisId = ?, productNameSnapshot = ?, sellingPointsSnapshotJson = ?,
+          ttsProviderId = ?, ttsVoice = ?, ttsSpeed = ?, updatedAt = ?
       WHERE id = ?
     `);
     const byOrdinal = new Map((db.prepare(`SELECT * FROM one_click_film_entries WHERE runId = ?`)
@@ -558,11 +622,25 @@ export function applyScriptPlan(db: Database.Database, input: {
       const previous = byOrdinal.get(ordinal);
       const restored = previous && db.prepare(`UPDATE one_click_film_entries SET retired = 0 WHERE id = ? AND retired = 1`).run(previous.id).changes > 0;
       if (restored) added.push(previous.code);
+      const targetModel: ModelSelection = !previous
+        ? (batchModel ?? { preset: 'auto', custom: '' })
+        : !batchModel || (input.plan.preserveIndividualModel && previous.modelSource === 'individual')
+          ? { preset: previous.modelPreset, custom: previous.modelCustom }
+          : batchModel;
+      const targetModelSource: ModelSource = !previous
+        ? 'batch'
+        : !batchModel || (input.plan.preserveIndividualModel && previous.modelSource === 'individual')
+          ? previous.modelSource
+          : 'batch';
+      const subject = subjectOf(input.analysis, input.points, targetModel);
       const subjectChanged = !previous
         || previous.analysisId !== input.analysis.id
         || previous.productNameSnapshot !== subject.product
         || JSON.stringify(previous.sellingPointsSnapshot) !== JSON.stringify(subject.points);
       const structureChanged = !previous || previous.structure !== structure;
+      const modelChanged = !previous
+        || previous.modelPreset !== targetModel.preset
+        || previous.modelCustom !== targetModel.custom;
       const soundChanged = !previous || previous.soundMode !== sound;
 
       if (!previous) {
@@ -571,29 +649,35 @@ export function applyScriptPlan(db: Database.Database, input: {
         const prompt = promptFor({ subject, structure, sound, copy, durationSec, aspectRatio });
         insert.run(
           uuidv4(), input.run.id, input.run.projectId, ordinal, code, structure, structureSource, sound,
+          targetModel.preset, targetModel.custom, targetModelSource,
           copy.title, copy.story, copy.narration, prompt.text, JSON.stringify(prompt.baseline), durationSec, aspectRatio,
           input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? '', tts.voice ?? '', Number(tts.speed) || 1, now, now,
         );
+        saveRevision(db, getEntry(db, input.run.id, code), 'generated');
         added.push(code);
         continue;
       }
 
-      if (structureChanged || subjectChanged) {
+      if (structureChanged || subjectChanged || modelChanged) {
+        preserveCurrentScript(db, previous);
         const copy = input.copies?.get(ordinal) ?? scriptCopy({ structure, subject, index: ordinal - 1, revision: previous.scriptRevision });
         const prompt = promptFor({ subject, structure, sound, copy, durationSec, aspectRatio });
         update.run(
-          structure, structureSource, sound, 'pending', copy.title, copy.story, copy.narration, prompt.text,
-          JSON.stringify(prompt.baseline), durationSec, aspectRatio, previous.scriptRevision,
+          structure, structureSource, sound, targetModel.preset, targetModel.custom, targetModelSource,
+          'pending', copy.title, copy.story, copy.narration, prompt.text,
+          JSON.stringify(prompt.baseline), durationSec, aspectRatio, previous.scriptRevision + 1,
           null, input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
           Number(tts.speed) || previous.ttsSpeed, now, previous.id,
         );
         if (!restored) rewritten.push(previous.code);
+        saveRevision(db, getEntry(db, input.run.id, previous.code), 'structure_change');
         continue;
       }
 
       if (soundChanged) {
+        preserveCurrentScript(db, previous);
         // 只替换声音段：手改的分镜与叙事原样保留。
         const promptText = replaceVoiceSection(previous.promptText, {
           sound,
@@ -606,9 +690,10 @@ export function applyScriptPlan(db: Database.Database, input: {
           durationSec: previous.promptDurationSec,
         }).split('\n\n');
         update.run(
-          structure, structureSource, sound, 'pending', previous.title, previous.outline, previous.narration, promptText,
+          structure, structureSource, sound, targetModel.preset, targetModel.custom, targetModelSource,
+          'pending', previous.title, previous.outline, previous.narration, promptText,
           JSON.stringify(baseline), previous.promptDurationSec, previous.promptAspectRatio,
-          previous.scriptRevision, null, input.analysis.id, subject.product, JSON.stringify(subject.points),
+          previous.scriptRevision + 1, null, input.analysis.id, subject.product, JSON.stringify(subject.points),
           tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
           Number(tts.speed) || previous.ttsSpeed, now, previous.id,
         );
@@ -616,8 +701,8 @@ export function applyScriptPlan(db: Database.Database, input: {
         continue;
       }
 
-      db.prepare(`UPDATE one_click_film_entries SET structureSource = ?, ttsProviderId = ?, ttsVoice = ?, ttsSpeed = ?, updatedAt = ? WHERE id = ?`)
-        .run(structureSource, tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
+      db.prepare(`UPDATE one_click_film_entries SET structureSource = ?, modelSource = ?, ttsProviderId = ?, ttsVoice = ?, ttsSpeed = ?, updatedAt = ? WHERE id = ?`)
+        .run(structureSource, targetModelSource, tts.providerId ?? previous.ttsProviderId, tts.voice ?? previous.ttsVoice,
           Number(tts.speed) || previous.ttsSpeed, now, previous.id);
       if (!restored) kept.push(previous.code);
     }
@@ -626,18 +711,28 @@ export function applyScriptPlan(db: Database.Database, input: {
   return { entries: listEntries(db, input.run.id), added, rewritten, removed, kept };
 }
 
+function preserveCurrentScript(db: Database.Database, entry: OneClickFilmEntry): void {
+  const last = db.prepare(`SELECT title, outline, narration, promptText FROM one_click_film_script_revisions
+    WHERE entryId = ? ORDER BY revisionNumber DESC LIMIT 1`).get(entry.id) as Pick<OneClickFilmEntry, 'title' | 'outline' | 'narration' | 'promptText'> | undefined;
+  if (last?.title === entry.title && last.outline === entry.outline && last.narration === entry.narration
+      && last.promptText === entry.promptText) return;
+  saveRevision(db, entry, entry.status === 'pending' ? 'generated' : 'manual');
+}
+
 function saveRevision(db: Database.Database, entry: OneClickFilmEntry, origin: 'generated' | 'redraft' | 'manual' | 'structure_change'): void {
   const next = ((db.prepare(`SELECT MAX(revisionNumber) AS v FROM one_click_film_script_revisions WHERE entryId = ?`)
     .get(entry.id) as { v: number | null }).v ?? 0) + 1;
   db.prepare(`
     INSERT INTO one_click_film_script_revisions
       (id, entryId, revisionNumber, origin, title, outline, narration, promptText, promptBaselineJson,
-       promptDurationSec, promptAspectRatio, structure, analysisId, sellingPointsSnapshotJson, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       promptDurationSec, promptAspectRatio, structure, modelPreset, modelCustom, analysisId,
+       sellingPointsSnapshotJson, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     uuidv4(), entry.id, next, origin, entry.title, entry.outline, entry.narration, entry.promptText,
     JSON.stringify(entry.promptBaseline), entry.promptDurationSec, entry.promptAspectRatio,
-    entry.structure, entry.analysisId, JSON.stringify(entry.sellingPointsSnapshot), new Date().toISOString(),
+    entry.structure, entry.modelPreset, entry.modelCustom, entry.analysisId,
+    JSON.stringify(entry.sellingPointsSnapshot), new Date().toISOString(),
   );
 }
 
@@ -648,19 +743,42 @@ export function updateEntryDraft(db: Database.Database, input: {
   outline?: string;
   narration?: string;
   promptText?: string;
+  modelPreset?: unknown;
+  modelCustom?: unknown;
 }): OneClickFilmEntry {
   const entry = getEntry(db, input.run.id, input.code);
   const title = input.title === undefined ? entry.title : input.title.trim().slice(0, SCRIPT_TITLE_LIMIT);
   if (input.title !== undefined && !title) throw new OneClickFilmError('invalid_input', '成片标题不能为空');
+  const nextModel = input.modelPreset !== undefined
+    ? parseModelSelection(input.modelPreset, input.modelCustom)
+    : { preset: entry.modelPreset, custom: entry.modelCustom };
+  const modelChanged = nextModel.preset !== entry.modelPreset || nextModel.custom !== entry.modelCustom;
+  const modelSource: ModelSource = modelChanged ? 'individual' : entry.modelSource;
+  let promptText = input.promptText ?? entry.promptText;
+  if (modelChanged && (input.promptText === undefined || input.promptText === entry.promptText)) {
+    const analysis = getAnalysis(db, entry.analysisId);
+    const resolvedModel = resolveModelSelection(nextModel, {
+      suggestedModel: analysis?.suggestedModel,
+      product: entry.productNameSnapshot,
+      appearance: analysis?.appearance,
+      sceneClues: analysis?.sceneClues,
+      points: entry.sellingPointsSnapshot,
+    });
+    promptText = replaceModelLine(promptText, resolvedModel);
+  }
   const now = new Date().toISOString();
   db.prepare(`
     UPDATE one_click_film_entries
-    SET title = ?, outline = ?, narration = ?, promptText = ?, status = ?, updatedAt = ?
+    SET title = ?, outline = ?, narration = ?, promptText = ?, modelPreset = ?, modelCustom = ?, modelSource = ?,
+        status = ?, updatedAt = ?
     WHERE id = ?
   `).run(
     title, input.outline ?? entry.outline,
     input.narration ?? entry.narration,
-    input.promptText ?? entry.promptText,
+    promptText,
+    nextModel.preset,
+    nextModel.custom,
+    modelSource,
     'draft', now, entry.id,
   );
   return getEntry(db, input.run.id, input.code);
@@ -673,6 +791,8 @@ export function confirmEntry(db: Database.Database, input: {
   outline?: string;
   narration?: string;
   promptText?: string;
+  modelPreset?: unknown;
+  modelCustom?: unknown;
 }): OneClickFilmEntry {
   const entry = updateEntryDraft(db, input);
   const outline = entry.outline.trim();
@@ -696,6 +816,8 @@ export function confirmEntry(db: Database.Database, input: {
     title: entry.title, outline, narration, promptText: finalPrompt,
     soundMode: entry.soundMode,
     structure: entry.structure,
+    modelPreset: entry.modelPreset,
+    modelCustom: entry.modelCustom,
     analysisId: entry.analysisId,
     productName: entry.productNameSnapshot,
     sellingPoints: entry.sellingPointsSnapshot,
@@ -716,23 +838,38 @@ export function confirmEntry(db: Database.Database, input: {
 
 /**
  * 单条重做：沿用该条结构与已选卖点，重写大纲/口播/分镜，回到待确认。
- * 不触碰其他条目的手稿、配音与确认记录。
+ * 支持同时切换本条出镜人物，不触碰其他条目的手稿、配音与确认记录。
  */
 export function redraftEntry(db: Database.Database, input: {
   run: OneClickFilmRun;
   code: string;
   copy?: ScriptCopy;
   expectedRevision?: number;
+  model?: ModelSelection;
+  modelSource?: ModelSource;
 }): OneClickFilmEntry {
   const entry = getEntry(db, input.run.id, input.code);
   if (input.expectedRevision !== undefined && input.expectedRevision !== entry.scriptRevision) return entry;
   const analysis = getAnalysis(db, entry.analysisId);
   if (!analysis) throw new OneClickFilmError('not_found', '该条目引用的分析版本已不存在', 404);
+  const nextModel = input.model
+    ? parseModelSelection(input.model.preset, input.model.custom)
+    : { preset: entry.modelPreset, custom: entry.modelCustom };
+  const modelChanged = nextModel.preset !== entry.modelPreset || nextModel.custom !== entry.modelCustom;
+  const nextModelSource: ModelSource = input.modelSource ?? (modelChanged ? 'individual' : entry.modelSource);
+  const resolvedModel = resolveModelSelection(nextModel, {
+    suggestedModel: analysis.suggestedModel,
+    product: entry.productNameSnapshot,
+    appearance: analysis.appearance,
+    sceneClues: analysis.sceneClues,
+    points: entry.sellingPointsSnapshot,
+  });
   const subject: FilmSubject = {
     product: entry.productNameSnapshot,
     appearance: analysis.appearance,
     points: entry.sellingPointsSnapshot,
     genre: '淘系种草',
+    model: resolvedModel,
   };
   const revision = entry.scriptRevision + 1;
   const copy = input.copy ?? scriptCopy({ structure: entry.structure, subject, index: entry.ordinal - 1, revision });
@@ -742,15 +879,21 @@ export function redraftEntry(db: Database.Database, input: {
   });
   const now = new Date().toISOString();
   db.transaction(() => {
+    preserveCurrentScript(db, entry);
     db.prepare(`
       UPDATE one_click_film_entries
-      SET title = ?, outline = ?, narration = ?, promptText = ?, promptBaselineJson = ?, scriptRevision = ?,
+      SET title = ?, outline = ?, narration = ?, promptText = ?, promptBaselineJson = ?,
+          modelPreset = ?, modelCustom = ?, modelSource = ?, scriptRevision = ?,
           status = 'pending', scriptConfirmedAt = NULL, scriptConfirmedJson = '{}', updatedAt = ?
       WHERE id = ?
-    `).run(copy.title, copy.story, copy.narration, prompt.text, JSON.stringify(prompt.baseline), revision, now, entry.id);
+    `).run(
+      copy.title, copy.story, copy.narration, prompt.text, JSON.stringify(prompt.baseline),
+      nextModel.preset, nextModel.custom, nextModelSource, revision, now, entry.id,
+    );
     saveRevision(db, {
       ...entry, title: copy.title, outline: copy.story, narration: copy.narration, promptText: prompt.text,
-      promptBaseline: prompt.baseline,
+      promptBaseline: prompt.baseline, modelPreset: nextModel.preset, modelCustom: nextModel.custom,
+      modelSource: nextModelSource,
     }, 'redraft');
   }).immediate();
   return getEntry(db, input.run.id, input.code);
@@ -770,11 +913,19 @@ export function reviewPrompt(db: Database.Database, input: {
 }): Array<{ code: string; review: PromptReview }> {
   return listEntries(db, input.run.id).map((entry) => {
     const analysis = getAnalysis(db, entry.analysisId);
+    const resolvedModel = resolveModelSelection({ preset: entry.modelPreset, custom: entry.modelCustom }, {
+      suggestedModel: analysis?.suggestedModel,
+      product: entry.productNameSnapshot,
+      appearance: analysis?.appearance,
+      sceneClues: analysis?.sceneClues,
+      points: entry.sellingPointsSnapshot,
+    });
     const subject: FilmSubject = {
       product: entry.productNameSnapshot,
       appearance: analysis?.appearance ?? '',
       points: entry.sellingPointsSnapshot,
       genre: '淘系种草',
+      model: resolvedModel,
     };
     const copy = scriptCopy({ structure: entry.structure, subject, index: entry.ordinal - 1, revision: entry.scriptRevision });
     return {
