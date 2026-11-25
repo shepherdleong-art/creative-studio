@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID } from '../lib/company-qiniu-kling-4.ts';
+import { CORE_USAGE_PRICING_VERSION } from '../lib/usage-pricing.ts';
 import { ensureCreativeCanvasSchemaReady } from '../lib/creative-canvas/schema.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
 import { createCanvas, saveCanvasGraph } from '../lib/creative-canvas/repository.ts';
@@ -220,6 +222,44 @@ let seedanceTaskId = '';
   assert.equal(result.ok, false, '缺表时应返回失败而不是抛错');
   assert.equal(result.inserted, false);
   isolated.close();
+}
+
+// Qiniu quotes follow the submitted resolution and preserve admitted prices and seconds.
+{
+  db.exec(`CREATE TABLE execution_operations (id TEXT PRIMARY KEY, module TEXT, taskId TEXT);
+    CREATE TABLE execution_attempts (id TEXT PRIMARY KEY, operationId TEXT, pricingSnapshotJson TEXT, createdAt TEXT);`);
+  db.prepare(`INSERT INTO creative_canvas_assets
+    (id, canvasId, mediaKind, relativePath, contentHash, mimeType, byteSize, durationSec, createdAt)
+    VALUES ('kling4-ref', ?, 'video', 'video.mp4', 'kling4-ref', 'video/mp4', 1, 3, '2026-11-25')`).run(canvas.id);
+  const providerSnapshot = JSON.stringify({ providerIdentity: QINIU_KLING_4_PROVIDER_ID, modelAlias: QINIU_KLING_4_MODEL });
+  for (const [id, resolution, hasVideo, expectedMinor] of [
+    ['k4-default', undefined, false, 500], ['k4-hd', '1080p', false, 750],
+    ['k4-sd-video', '720p', true, 600], ['k4-hd-video', '1080p', true, 900],
+  ] as const) {
+    const generationMode = hasVideo ? 'reference-to-video' : 'image-to-video';
+    db.prepare(`INSERT INTO creative_canvas_tasks
+      (id, canvasId, nodeId, nodeEpoch, mediaKind, phase, submissionState, providerSnapshot, parameterSnapshot, createdAt, updatedAt)
+      VALUES (?, ?, ?, 0, 'video', 'polling', 'accepted', ?, ?, '2026-11-25', '2026-11-25')`)
+      .run(id, canvas.id, id, providerSnapshot, JSON.stringify({ generationMode, parameters: { resolution } }));
+    if (hasVideo) db.prepare(`INSERT INTO creative_canvas_task_inputs (id, taskId, refId, orderIndex, role, assetId, createdAt)
+      VALUES (?, ?, 'ref', 0, 'reference', 'kling4-ref', '2026-11-25')`).run(id + '-input', id);
+    const task = getCanvasTask(db, id)!;
+    const quote = canvasTaskCostQuote(db, task);
+    assert.equal(quote.kind, 'priced');
+    assert.deepEqual(quote.reserve, { currency: 'CNY', minor: expectedMinor });
+    db.prepare('INSERT INTO execution_operations VALUES (?, ?, ?)').run(id, 'canvas', id);
+    db.prepare('INSERT INTO execution_attempts VALUES (?, ?, ?, ?)')
+      .run(id, id, JSON.stringify(quote.pricingSnapshot), '2026-11-25');
+    assert.deepEqual(canvasTaskActualCost(db, task), quote.reserve);
+    assert.equal(recordCanvasTaskUsage(db, { taskId: id }).inserted, true);
+    assert.equal(db.prepare('SELECT costMicros FROM usage_ledger WHERE refId = ?').pluck().get(id), expectedMinor * 10_000);
+  }
+  db.prepare("UPDATE creative_canvas_assets SET durationSec = 12 WHERE id = 'kling4-ref'").run();
+  const hdVideo = getCanvasTask(db, 'k4-hd-video')!;
+  assert.deepEqual(canvasTaskActualCost(db, hdVideo), { currency: 'CNY', minor: 900 });
+  const legacyQuote = { pricingVersion: CORE_USAGE_PRICING_VERSION, coreModelKey: QINIU_KLING_4_PROVIDER_ID, quantity: 5 };
+  db.prepare('UPDATE execution_attempts SET pricingSnapshotJson = ? WHERE id = ?').run(JSON.stringify(legacyQuote), hdVideo.id);
+  assert.deepEqual(canvasTaskActualCost(db, hdVideo), { currency: 'CNY', minor: 500 });
 }
 
 db.close();

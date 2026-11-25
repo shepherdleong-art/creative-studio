@@ -8,6 +8,7 @@
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Handle, NodeResizeControl, Position, ResizeControlVariant, useOnViewportChange, type NodeProps } from '@xyflow/react';
 import { CANVAS_DRAFT_FINAL_HANDLE, resolveCanvasMentions } from '@/lib/creative-canvas/graph';
+import { normalizeCanvasParameterValue } from '@/lib/creative-canvas/capabilities';
 import {
   filterMentionCandidates,
   findActiveMentionQuery,
@@ -416,13 +417,19 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
         <div className="mt-2">
           {assetId ? (
             mediaKind === 'image' ? (
-              <img
-                src={canvasAssetUrl(assetId)}
-                alt="素材"
-                className="nodrag mx-auto block h-auto max-h-80 w-auto max-w-full cursor-zoom-in rounded-lg"
-                data-testid="material-image"
+              <button
+                type="button"
+                aria-label="全屏查看图片"
+                className="nodrag mx-auto block max-w-full cursor-zoom-in rounded-lg"
                 onClick={() => setZoomed(true)}
-              />
+              >
+                <img
+                  src={canvasAssetUrl(assetId)}
+                  alt="素材"
+                  className="block h-auto max-h-80 w-auto max-w-full rounded-lg"
+                  data-testid="material-image"
+                />
+              </button>
             ) : mediaKind === 'video' ? (
               <RegisteredVideo
                 nodeId={id}
@@ -843,14 +850,16 @@ export const GenerationNode = memo(function GenerationNode({
             for (const parameter of next?.parameters ?? []) {
               const old = data.parameters?.[parameter.key];
               if (old === undefined) continue;
-              const invalid = (parameter.options && !parameter.options.includes(String(old)))
-                || (typeof old === 'number' && !parameter.specialValues?.includes(old) && ((parameter.min !== undefined && old < parameter.min) || (parameter.max !== undefined && old > parameter.max)));
+              const value = normalizeCanvasParameterValue(parameter, old);
+              const invalid = (parameter.options && !parameter.options.includes(String(value)))
+                || (parameter.type === 'integer' && !Number.isInteger(value))
+                || (typeof value === 'number' && !parameter.specialValues?.includes(value) && ((parameter.min !== undefined && value < parameter.min) || (parameter.max !== undefined && value > parameter.max)));
               if (invalid) {
                 if (parameter.default !== undefined) parameters[parameter.key] = parameter.default;
                 const label = parameter.default === 'gateway-default' ? '网关默认（待验证）' : String(parameter.default ?? '默认');
                 changes.push(`${parameter.label}调整为 ${label}`);
               }
-              else parameters[parameter.key] = old;
+              else parameters[parameter.key] = value;
             }
             if (!data.modelKey && next?.parameters.some((parameter) => parameter.key === 'withAudio')) parameters.withAudio = true;
             if (data.parameters?.generationStage === 'draft' && next && !next.parameters.some((parameter) => parameter.key === 'generationStage')) {

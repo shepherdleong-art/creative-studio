@@ -17,7 +17,11 @@ import {
   type MiniMaxH3Pricing, type MiniMaxH3VideoUsage,
 } from './minimax-h3-pricing.ts';
 import { QINIU_IMAGE_26_MODELS } from './company-qiniu-image-models.ts';
-import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID } from './company-qiniu-kling-4.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROJECT_RESOLUTION, QINIU_KLING_4_PROVIDER_ID } from './company-qiniu-kling-4.ts';
+import {
+  QINIU_KLING_4_LEGACY_FIVE_SECOND_PRICE, QINIU_KLING_4_PRICING_VERSION, QINIU_KLING_4_SECOND_PRICES,
+  type QiniuKling4Pricing,
+} from './qiniu-kling-4-pricing.ts';
 import { COMPANY_SEEDREAM_55 } from './company-seedream-image.ts';
 
 export const CORE_USAGE_PRICING_VERSION = 'core-usage-pricing-2026-09-30';
@@ -109,6 +113,7 @@ export interface CoreUsageSnapshotV1 {
   startedAt: string;
   /** Frozen H3 input/output measurement, independent of later job/provider edits. */
   videoUsage?: MiniMaxH3VideoUsage;
+  estimatedBillingSeconds?: number;
   projectId?: string;
   refType: string;
   refId: string;
@@ -116,6 +121,7 @@ export interface CoreUsageSnapshotV1 {
 
 export interface CoreUsageSnapshotOptions {
   videoUsage?: MiniMaxH3VideoUsage;
+  estimatedBillingSeconds?: number;
   startedAt?: string;
   projectId?: string;
   refType: string;
@@ -193,8 +199,7 @@ function cloneComponents(components: readonly CoreUsagePriceComponentV1[]): read
 
 /** 普通模型与历史快照的账单均价；H3 新任务带输出档位时使用腾讯分项价。 */
 export const BILLING_MODEL_PRICES = [
-  // 720p 无输入视频按 ¥1/秒估算（实测 3.042 秒合计约 ¥3.04）。
-  { key: QINIU_KLING_4_PROVIDER_ID, id: QINIU_KLING_4_PROVIDER_ID, model: QINIU_KLING_4_MODEL, category: 'video', micros: 5_000_000 },
+  { key: QINIU_KLING_4_PROVIDER_ID, id: QINIU_KLING_4_PROVIDER_ID, model: QINIU_KLING_4_MODEL, category: 'video', micros: QINIU_KLING_4_LEGACY_FIVE_SECOND_PRICE },
   // 七牛 2.6 实际按 token 结算；每张估算取 2K 方图样本退款后的净额（¥0.486864）。
   ...QINIU_IMAGE_26_MODELS.map(({ id, key, model }) => ({ id, key, model, category: 'image' as const, micros: 490_000 })),
   // 公司网关 2026-11-19 默认分组按次定价：0.01857143 × 7 CNY，四舍五入为 ¥0.13/张。
@@ -359,7 +364,7 @@ function matchesScriptIdentity(
  */
 export function resolveCoreUsagePlan(
   providerSnapshot: CoreUsageProviderSnapshot | null | undefined,
-  pricing?: Seedance25StagePricing | MiniMaxH3Pricing,
+  pricing?: Seedance25StagePricing | MiniMaxH3Pricing | QiniuKling4Pricing,
 ): CoreUsagePlan | null {
   if (!providerSnapshot || typeof providerSnapshot !== 'object') return null;
   const provider = providerSnapshot as Partial<CoreUsageProviderSnapshot>;
@@ -372,6 +377,18 @@ export function resolveCoreUsagePlan(
         ? matchesVideoIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-video' })
         : matchesScriptIdentity(provider, { ...identity, canonicalProviderId: entry.id, providerType: 'openai-compatible', executionScope: 'company', apiStyle: 'openai-compatible' });
     if (matches) {
+      if (entry.model === QINIU_KLING_4_MODEL) {
+        const { resolution, hasInputVideo } = pricing && 'hasInputVideo' in pricing && 'resolution' in pricing
+          ? pricing : { resolution: QINIU_KLING_4_PROJECT_RESOLUTION, hasInputVideo: false };
+        if (resolution !== '720p' && resolution !== '1080p') return null;
+        const rates = QINIU_KLING_4_SECOND_PRICES[resolution];
+        return Object.freeze({
+          ...createPlan(entry.key, 'video', entry.model, [
+            { key: 'second', unit: 'second', unitPriceMicros: hasInputVideo ? rates.withVideo : rates.withoutVideo, priceScale: 1 },
+          ]),
+          pricingVersion: QINIU_KLING_4_PRICING_VERSION,
+        });
+      }
       if (entry.model === 'minimax-h3' && pricing && 'resolution' in pricing) {
         const resolution = minimaxH3Resolution(pricing.resolution);
         if (!resolution) return null;
@@ -602,6 +619,7 @@ export function createCoreUsageSnapshot(
   return {
     schemaVersion: 1,
     ...(options.videoUsage ? { videoUsage: { ...options.videoUsage } } : {}),
+    ...(options.estimatedBillingSeconds === undefined ? {} : { estimatedBillingSeconds: options.estimatedBillingSeconds }),
     provider: snapshotProvider(provider),
     coreModelKey: plan.coreModelKey,
     pricingVersion: plan.pricingVersion,

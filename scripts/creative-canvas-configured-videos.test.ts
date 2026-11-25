@@ -30,6 +30,11 @@ try {
   insert.run('company-qiniuyun-kling-4-0', '七牛可灵 4.0', 'qiniuyun/kling-4.0', 'http://127.0.0.1:4300', 'fixture-key');
   const kling4 = configuredCanvasVideos(db).find(model => model.modelAlias === 'qiniuyun/kling-4.0')!;
   assert.deepEqual(kling4.modes, ['image-to-video', 'frames-to-video', 'reference-to-video']);
+  for (const mode of kling4.modes) {
+    const ratio = kling4.parameters.find(parameter => parameter.label === '比例' && parameter.modes?.includes(mode));
+    assert.deepEqual(ratio?.options, ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive']);
+    assert.equal(ratio?.default, mode === 'reference-to-video' ? '16:9' : 'adaptive');
+  }
   assert.deepEqual(kling4.inputs.filter(rule => rule.kind === 'image' && rule.modes?.includes('image-to-video')).map(rule => [rule.roles, rule.min, rule.max]), [
     [['first-frame'], 1, 1], [['last-frame'], 0, 1],
   ]);

@@ -1,4 +1,5 @@
-import { readMiniMaxH3JobUsage, videoJobUsageMeasurement } from './usage-video-measurement.ts';
+import { readMiniMaxH3JobUsage, readQiniuKling4JobUsage, videoJobUsageMeasurement } from './usage-video-measurement.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
 import { parseUsageSnapshot } from './usage-snapshot.ts';
 import type Database from 'better-sqlite3';
 
@@ -229,8 +230,9 @@ export function buildVideoJobUsageSnapshot(
     baseUrl: input.provider.baseUrl ?? '',
   };
   const videoUsage = input.requestModel === 'minimax-h3' ? readMiniMaxH3JobUsage(db, input.jobId) : undefined;
-  if (videoUsage === null) return null;
-  const plan = resolveCoreUsagePlan(provider, videoUsage ? { resolution: videoUsage.resolution } : undefined);
+  const qiniuUsage = input.requestModel === QINIU_KLING_4_MODEL ? readQiniuKling4JobUsage(db, input.jobId) : undefined;
+  if (videoUsage === null || qiniuUsage === null) return null;
+  const plan = resolveCoreUsagePlan(provider, qiniuUsage ?? videoUsage);
   if (!plan) return null;
   if (!isUsageSchemaReady(db)) {
     // 核心模型调用仍照常执行，但本次不进入消耗统计；必须留下脱敏告警。
@@ -240,6 +242,7 @@ export function buildVideoJobUsageSnapshot(
 
   const snapshot = createCoreUsageSnapshot(provider, plan, {
     ...(videoUsage ? { videoUsage } : {}),
+    estimatedBillingSeconds: qiniuUsage?.estimatedBillingSeconds,
     startedAt: input.startedAt,
     projectId: input.projectId ?? undefined,
     refType: input.refType ?? 'video-job',

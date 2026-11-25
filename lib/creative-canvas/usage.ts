@@ -10,7 +10,10 @@
  */
 
 import type Database from 'better-sqlite3';
+import { QINIU_KLING_4_MODEL } from '../company-qiniu-kling-4.ts';
+import { QINIU_KLING_4_PRICING_VERSION } from '../qiniu-kling-4-pricing.ts';
 import { minimaxH3CanvasUsageBasis } from './minimax-h3-usage.ts';
+import { qiniuKling4CanvasUsageBasis } from './qiniu-kling-4-usage.ts';
 import type { MiniMaxH3VideoUsage } from '../minimax-h3-pricing.ts';
 import { seedanceStageUsageBasis } from './seedance-stage-usage.ts';
 import {
@@ -82,6 +85,10 @@ function canvasPricingBasis(db: Database.Database, task: CanvasTaskRecord, purpo
   );
   if (identity.requestModel === 'minimax-h3') {
     const basis = minimaxH3CanvasUsageBasis(db, task, identity, nodeParameters, snapshotFields.generationMode, purpose);
+    return basis ? { identity, ...basis } : null;
+  }
+  if (identity.requestModel === QINIU_KLING_4_MODEL) {
+    const basis = qiniuKling4CanvasUsageBasis(db, task, identity, plan, nodeParameters, snapshotFields.generationMode, purpose);
     return basis ? { identity, ...basis } : null;
   }
   if (nodeParameters.generationStage === 'draft' || nodeParameters.generationStage === 'final-from-draft') {
@@ -186,6 +193,7 @@ function recordCanvasTaskUsageUnsafe(
 
   const snapshot = createCoreUsageSnapshot(identity, plan, {
     ...(basis.videoUsage ? { videoUsage: basis.videoUsage } : {}),
+    estimatedBillingSeconds: plan.pricingVersion === QINIU_KLING_4_PRICING_VERSION && typeof quantity === 'number' ? quantity : undefined,
     startedAt: task.createdAt,
     refType: 'canvas-task',
     refId: task.id,

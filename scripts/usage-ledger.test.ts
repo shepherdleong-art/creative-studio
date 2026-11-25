@@ -1,5 +1,6 @@
 import { queryUsageDashboard, listUsageRecords } from '../lib/usage-query.ts';
 import { BILLING_MODEL_PRICES } from '../lib/usage-pricing.ts';
+import { QINIU_KLING_4_MODEL } from '../lib/company-qiniu-kling-4.ts';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -83,6 +84,8 @@ function setupCoreTables(db: Database.Database): void {
       model TEXT NOT NULL,
       status TEXT NOT NULL,
       durationSec REAL NOT NULL DEFAULT 5,
+      resolution TEXT,
+      generationMode TEXT NOT NULL DEFAULT 'image-to-video',
       finishedAt TEXT,
       startedAt TEXT,
       createdAt TEXT,
@@ -670,6 +673,7 @@ function insertVideoProvider(db: Database.Database, input: {
       insertVideoProvider(db, { id: entry.id, defaultModel: entry.model });
       insertVideoJob(db, { id: entry.key, providerId: entry.id, model: entry.model, durationSec: 10 });
       insertVideoJob(db, { id: `${entry.key}-running`, providerId: entry.id, model: entry.model, status: 'running' });
+      if (entry.model === QINIU_KLING_4_MODEL) db.prepare("UPDATE video_jobs SET resolution = '1080p' WHERE model = ?").run(entry.model);
     }
   }
   // A lookalike public host must not pass the loopback gate during backfill.
@@ -680,7 +684,8 @@ function insertVideoProvider(db: Database.Database, input: {
   assert.equal(count, BILLING_MODEL_PRICES.length);
   for (const entry of BILLING_MODEL_PRICES.filter((entry) => entry.category !== 'llm_text')) {
     const row = db.prepare('SELECT costMicros, projectId, createdAt FROM usage_ledger WHERE refId = ?').get(entry.key);
-    assert.deepEqual(row, { costMicros: entry.micros * (entry.category === 'video' ? 2 : 1),
+    const expectedCost = entry.model === QINIU_KLING_4_MODEL ? 15_000_000 : entry.micros * (entry.category === 'video' ? 2 : 1);
+    assert.deepEqual(row, { costMicros: expectedCost,
       projectId: 'project-1', createdAt: '2026-08-18T01:02:03.000Z' });
     const dashboard = queryUsageDashboard(db, { coreModelKey: entry.key, now: new Date('2026-08-18T12:00:00Z') });
     assert.equal(dashboard.totals.callCount, 1);

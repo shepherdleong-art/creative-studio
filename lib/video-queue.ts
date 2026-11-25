@@ -30,11 +30,13 @@ import {
   deliverVideoReferenceMedia,
   precheckSeedanceReferenceMedia,
   precheckVideoReferenceDeliveryMedia,
+  prepareMiniMaxH3ReferenceImage,
   prepareSeedanceSourceReference,
   VideoReferenceMediaError,
 } from './video-providers/reference-media.ts';
 import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import { encodeImageWithinByteBudget } from './media-core/image-byte-budget.ts';
 import { supportsQiniuKling4Modes, validateQiniuKling4MiddleFrames } from './company-qiniu-kling-4.ts';
 import { registerManagedFile } from './media-core/access-context.ts';
 import {
@@ -417,17 +419,32 @@ async function prepareReferenceSubmitRequest(
   signal: AbortSignal,
 ): Promise<SubmitReferenceVideoRequest> {
   if (!job.aspectRatio || !job.resolution) throw new Error('全能参考任务缺少冻结的输出比例或清晰度');
+  const capability = videoReferenceCapability(providerType, job.model);
+  if (!capability.supported) throw new Error(`模型 ${job.model} 不支持全能参考`);
   const assets = readVideoJobReferenceAssets(db, job);
-  if (assets.length === 0) {
+  const usesSourceReference = assets.length === 0;
+  const isMiniMaxH3 = job.model === 'minimax-h3';
+  if (usesSourceReference) {
     const source = await readVideoSourceReference(db, job.sourceImageId, job.projectId);
-    const imageBuffer = job.model === SEEDANCE_25 ? await prepareSeedanceSourceReference(source.path, source.byteSize) : undefined;
-    assets.push(imageBuffer ? { ...source, imageBuffer, mimeType: 'image/jpeg', byteSize: imageBuffer.length } : source);
+    let imageBuffer = job.model === SEEDANCE_25 ? await prepareSeedanceSourceReference(source.path, source.byteSize) : undefined;
+    const mimeType = imageBuffer ? 'image/jpeg' : source.mimeType;
+    if (!isMiniMaxH3 && (imageBuffer?.length ?? source.byteSize) > capability.image.maxBytes) {
+      imageBuffer = await encodeImageWithinByteBudget(
+        imageBuffer ?? await fs.promises.readFile(source.path), mimeType, source.longestEdge, capability.image.maxBytes, signal,
+      );
+    }
+    assets.push(imageBuffer ? { ...source, imageBuffer, mimeType, byteSize: imageBuffer.length } : source);
   }
   if (new Set(assets.map((asset) => asset.id)).size !== assets.length) throw new Error('全能参考素材不能重复');
 
-  const capability = videoReferenceCapability(providerType, job.model);
-  if (!capability.supported) throw new Error(`模型 ${job.model} 不支持全能参考`);
   for (const asset of assets) {
+    if (isMiniMaxH3 && asset.kind === 'image' && capability.image.mimeTypes.includes(asset.mimeType)) {
+      const buffer = await prepareMiniMaxH3ReferenceImage(asset.path, asset.mimeType, asset.byteSize, capability.image.maxBytes, signal);
+      if (buffer) {
+        asset.imageBuffer = buffer;
+        asset.byteSize = buffer.length;
+      }
+    }
     const media = {
       kind: asset.kind,
       absolutePath: asset.path,
@@ -469,6 +486,7 @@ async function prepareReferenceSubmitRequest(
       requireCos: providerType === 'openai-video',
       isFrameImage: false,
       imageBuffer: asset.imageBuffer,
+      imageCompression: usesSourceReference || isMiniMaxH3 ? false : undefined,
       imageFallback: 'data-url',
     }, signal);
     references.push({

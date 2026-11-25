@@ -402,8 +402,8 @@ function EditorInner({ canvasId }: { canvasId: string }) {
     void fitView({ nodes: [{ id: nodeId }], duration: 300, maxZoom: 1.2 });
   }, [fitView]);
 
-  const knownNodeIds = useMemo(
-    () => new Set(controller.nodes.map((node) => node.id)),
+  const nodeTitles = useMemo(
+    () => new Map(controller.nodes.map((node) => [node.id, String(node.data.title ?? '')])),
     [controller.nodes],
   );
 
@@ -800,7 +800,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
           </div>
 
           {drawerOpen ? (
-            <CanvasTaskDrawer canvasId={canvasId} knownNodeIds={knownNodeIds} onLocate={onLocate} onShowLogs={(task) => setLogTarget({ canvasId: task.canvasId, jobId: task.id })} />
+            <CanvasTaskDrawer canvasId={canvasId} nodeTitles={nodeTitles} onLocate={onLocate} onShowLogs={(task) => setLogTarget({ canvasId: task.canvasId, jobId: task.id })} />
           ) : null}
         </div>
       </div>
@@ -814,7 +814,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
 export function CanvasEditor({ canvasId }: { canvasId: string }) {
   return (
     <ReactFlowProvider>
-      <CanvasToastProvider>
+      <CanvasToastProvider key={canvasId}>
         <EditorInner canvasId={canvasId} />
       </CanvasToastProvider>
     </ReactFlowProvider>

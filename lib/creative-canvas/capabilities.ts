@@ -31,6 +31,19 @@ export interface CanvasCapabilityParameter {
   modes?: ReadonlyArray<CanvasGenerationMode>;
 }
 
+/** 时长枚举存字符串，切换到整数时长的模型时兼容旧节点。 */
+export function normalizeCanvasParameterValue(
+  parameter: Pick<CanvasCapabilityParameter, 'key' | 'type'> | undefined,
+  value: string | number | boolean,
+): string | number | boolean {
+  if (parameter?.key === 'durationSec' && parameter.type === 'integer'
+    && typeof value === 'string' && /^-?\d+$/.test(value)) {
+    const seconds = Number(value);
+    if (Number.isSafeInteger(seconds)) return seconds;
+  }
+  return value;
+}
+
 export interface CanvasInputRule {
   kind: CanvasMediaKind | 'text';
   roles: ReadonlyArray<CanvasReferenceRole>;

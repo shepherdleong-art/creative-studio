@@ -14,7 +14,7 @@ import { videoDurationError } from '../../video-duration.ts';
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { snapCompanyImageSize, companyImageCapsForModel, companyImageCellExecutable, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
-import { QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields } from '../../company-qiniu-kling-4.ts';
+import { QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields } from '../../company-qiniu-kling-4.ts';
 import { assertCompanyTailFrameTransport } from '../../company-gateway-tail-frame.ts';
 import { validateVideoReferenceRequest } from '../../video-reference-contract.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
@@ -165,10 +165,10 @@ function validateKling4CanvasInputs(capability: CanvasModelCapability, context: 
       id: input.refId, kind: input.kind, mimeType: input.mimeType ?? '',
       byteSize: input.byteSize, durationSec: input.durationSec,
     }]);
+    // 画布的 aspectRatio 已按能力表校验；共享校验复用主工作台的素材、时长及清晰度规则。
     problems.push(...validateVideoReferenceRequest({
       providerType: 'openai-video', model: QINIU_KLING_4_MODEL, references,
       durationSec: Number(context.parameters.durationSec ?? 5),
-      aspectRatio: String(context.parameters.aspectRatio ?? '16:9'),
       resolution: typeof context.parameters.resolution === 'string' ? context.parameters.resolution : undefined,
     }, { deferImageByteLimit: true }));
   }
@@ -252,7 +252,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
     async prepare(context, signal) {
       const capability = findGatewayCapability(context.capabilityKey);
       const route = routeFor(context);
-      if (capability.modelAlias === QINIU_KLING_4_MODEL) {
+      const isKling4 = capability.modelAlias === QINIU_KLING_4_MODEL;
+      if (isKling4) {
         validateKling4CanvasInputs(capability, context);
         if (context.inputs.some(input => input.role === 'last-frame')) {
           await assertCompanyTailFrameTransport(route.baseUrl);
@@ -274,6 +275,7 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       const requiresCos = isCompanyCapability(capability)
         && companyCanvasModelRequiresCos(capability.modelAlias);
       const hasTailRole = mediaInputs.some((input) => input.role === 'last-frame');
+      const frameRatio = context.parameters.frameAspectRatio;
 
       for (const input of mediaInputs) {
         const rule = inputRuleFor(capability, input, context.generationMode);
@@ -293,6 +295,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         }
         // 尾帧必须走 COS（公司尾帧红线）；七牛渠道的所有素材都走 COS。
         const requireCos = requiresCos || (hasTailRole && isFrameRole(input.role));
+        const cropToAspectRatio = isKling4 && isFrameRole(input.role)
+          && typeof frameRatio === 'string' && frameRatio !== 'adaptive' ? frameRatio : undefined;
         try {
           const prepared = await prepareCanvasDeliveryMedia({
             kind: input.kind as 'image' | 'video' | 'audio',
@@ -302,11 +306,15 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
             durationSec: input.durationSec,
             role: input.role,
             requireCos,
+            preferCosOrigin: capability.modelAlias === 'qiniuyun/gpt-image-2.6-sunburst' && input.kind === 'image',
             isFrameImage: input.kind === 'image' && isFrameRole(input.role),
           }, {
+            modelAlias: capability.modelAlias,
             ...(rule.mimeTypes ? { mimeTypes: rule.mimeTypes } : {}),
             ...(rule.maxBytes !== undefined ? { maxBytes: rule.maxBytes } : {}),
             ...(rule.maxDurationSec !== undefined ? { maxDurationSec: rule.maxDurationSec } : {}),
+            ...(cropToAspectRatio ? { cropToAspectRatio, maxBytes: QINIU_KLING_4_IMAGE_MAX_BYTES,
+              outputImageMimeTypes: ['image/png', 'image/jpeg'] } : {}),
           }, signal);
           try {
             input.deliveryRef = await deliverer.deliver(prepared.request, signal);
@@ -387,13 +395,12 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           }]), durationSec, String(context.parameters.aspectRatio ?? '16:9'), resolution));
         } else {
           const firstFrame = imageInputs.find(input => input.role === 'first-frame')!;
-          const size = firstFrame.absolutePath ? await probeImageDimensions(firstFrame.absolutePath) : null;
-          if (!size) throw new CanvasAdapterError('prepare', '无法读取七牛可灵 4.0 首帧尺寸', { code: 'missing_output_ratio' });
+          if (!firstFrame.absolutePath || !await probeImageDimensions(firstFrame.absolutePath)) {
+            throw new CanvasAdapterError('prepare', '无法读取七牛可灵 4.0 首帧图片', { code: 'invalid_first_frame' });
+          }
           const middleFrames = imageInputs.filter(input => input.role === 'middle-frame').map(input => input.deliveryRef!);
           Object.assign(body, qiniuKling4FirstFrameFields(firstFrame.deliveryRef!, durationSec, middleFrames, resolution));
           if (lastFrameRef) body.end_image_url = lastFrameRef;
-          const outputSize = snapCompanyVideoSize(size.width, size.height, companyVideoCapsForModel(QINIU_KLING_4_MODEL)!, resolution);
-          if (outputSize) body.size = outputSize;
         }
       } else {
         if (bodyImageRefs.length > 0) body.images = bodyImageRefs;

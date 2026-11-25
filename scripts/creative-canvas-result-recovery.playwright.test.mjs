@@ -11,6 +11,7 @@ import ts from 'typescript';
 import postcss from 'postcss';
 import tailwind from '@tailwindcss/postcss';
 import ffmpeg from 'ffmpeg-static';
+import sharp from 'sharp';
 import { chromium, webkit } from '@playwright/test';
 import { directSeedanceCapability } from '../lib/creative-canvas/adapters/seedance-capabilities.ts';
 import { SEEDANCE_25 } from '../lib/video-providers/seedance-contract.ts';
@@ -49,7 +50,7 @@ const script = [
   'const cache={};function load(id){if(cache[id])return cache[id].exports;const m=cache[id]={exports:{}};const[fn,deps]=modules[id];fn(r=>load(deps[r]),m,m.exports);return m.exports;}',
   'const React=load(' + react + '),h=React.createElement,{useCanvasEditor,buildCanvasGraph}=load(' + editor + '),{CanvasToastProvider}=load(' + toasts + ');',
   'const {ReactFlow,ReactFlowProvider,useReactFlow}=load(' + flow + '),{CanvasNodeContext}=load(' + context + '),{GenerationNode,MaterialNode}=load(' + nodes + ');',
-  'const nodeTypes={"video-generation":GenerationNode,material:MaterialNode};',
+  'const nodeTypes={"image-generation":GenerationNode,"video-generation":GenerationNode,material:MaterialNode};',
   'const capabilities=' + JSON.stringify([capability]) + ';',
   "function Editor(){const controller=useCanvasEditor('recovery');window.editor=controller;window.fit=useReactFlow().fitView;",
   'const graph=buildCanvasGraph(controller.nodes,controller.edges);',
@@ -61,7 +62,7 @@ const script = [
   'window.showEditor();',
 ].join('\n');
 const source = fs.readFileSync('app/globals.css', 'utf8').replace('@theme {', '@theme static {')
-  .replace('@import "tailwindcss";', '@import "tailwindcss" source(none);\n@source "../components/creative-canvas/nodes.tsx";\n@source "../components/creative-canvas/DraftActions.tsx";');
+  .replace('@import "tailwindcss";', '@import "tailwindcss" source(none);\n@source "../components/creative-canvas/*.tsx";');
 const css = (await postcss([tailwind()]).process(source, { from: path.join(root, 'app/globals.css') })).css
   + fs.readFileSync('node_modules/@xyflow/react/dist/style.css', 'utf8');
 const generator = { id: 'video', kind: 'video-generation', position: { x: 0, y: 0 }, data: {
@@ -83,8 +84,10 @@ function reset() {
 reset();
 const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-result-browser-'));
 const videoFile = path.join(fixtureDir, 'fixture.mp4');
-execFileSync(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'color=blue:size=120x160:rate=24:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoFile], { stdio: 'ignore', timeout: 30_000 });
+const photo = path.join(root, 'public/brand/login-background.jpg');
+execFileSync(ffmpeg, ['-y', '-loop', '1', '-i', photo, '-t', '1', '-vf', 'scale=120:160:force_original_aspect_ratio=increase,crop=120:160', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoFile], { stdio: 'ignore', timeout: 30_000 });
 const videoBytes = fs.readFileSync(videoFile);
+const tailImage = await sharp(photo).resize(640, 360).png().toBuffer();
 const server = http.createServer(async (req, res) => {
   const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
   if (req.url === '/api/canvas/recovery/runs') {
@@ -108,7 +111,10 @@ const server = http.createServer(async (req, res) => {
         if (!canvas.nodeStates.some(s => s.nodeId === node.id)) canvas.nodeStates.push({ nodeId: node.id, nodeEpoch: 1, deleted: false, currentAssetId: null, activeTaskId: null });
         if (node.kind === 'material' && node.data.assetId) presented.add(node.data.assetId);
       }
-      for (const candidate of canvas.nodeCandidates) candidate.materialized = presented.has(candidate.assetId);
+      for (const candidate of canvas.nodeCandidates) {
+        candidate.materialized = presented.has(candidate.assetId);
+        candidate.tailMaterialized = presented.has(candidate.tailAssetId);
+      }
     }
     json({ canvas });
   } else if (req.url?.endsWith('/draft')) {
@@ -116,7 +122,14 @@ const server = http.createServer(async (req, res) => {
     json({ source: assetId === 'completed-while-away' ? {
       assetId, taskId: 'draft-task', capabilityKey: capability.key, generationMode: 'text-to-video',
       parameters: { durationSec: 15 }, expiresAt: new Date(Date.now() + 86400_000).toISOString(), expired: false,
-    } : null, metadata: { stage: assetId === 'completed-while-away' ? 'draft' : 'final-from-draft' } });
+    } : null, metadata: { stage: assetId === 'completed-while-away' ? 'draft' : 'final-from-draft' },
+    result: assetId === 'new-video-1'
+      ? { model: 'qiniuyun/kling-4.0', modelName: '可灵 4.0', completedAt: '2026-11-25T04:30:00.000Z' }
+      : assetId === 'new-video-3'
+        ? { model: SEEDANCE_25, modelName: 'Seedance 2.5', completedAt: '2026-11-25T04:34:52.000Z' }
+        : null });
+  } else if (['/api/canvas/assets/tail-frame', '/api/canvas/assets/new-image'].includes(req.url)) {
+    res.setHeader('Content-Type', 'image/png'); res.end(tailImage);
   } else if (req.url?.startsWith('/api/canvas/assets/')) {
     res.setHeader('Content-Type', 'video/mp4'); res.end(videoBytes);
   } else if (req.url === '/fixture.js') {
@@ -130,7 +143,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const evidenceDir = path.resolve('outputs/04-测试与验收/2026-11-16-canvas-draft-fixes');
+const evidenceDir = path.resolve(process.env.CANVAS_RESULT_EVIDENCE_DIR || 'outputs/04-测试与验收/2026-11-16-canvas-draft-fixes');
 fs.mkdirSync(evidenceDir, { recursive: true });
 async function until(predicate, message) {
   for (let attempt = 0; attempt < 80; attempt++) {
@@ -225,8 +238,71 @@ try {
       await page.evaluate(() => window.showEditor());
       await page.waitForFunction(() => window.editor?.loadState === 'ready');
       assert.equal(await page.evaluate(() => window.editor.nodes.some(n => n.data.assetId === 'formal-result')), false, '已主动删除的结果不能复活');
+      const dismissNotice = page.getByRole('button', { name: '关闭生成成功提醒' });
+      assert.equal(await dismissNotice.count(), 0, '重新打开已保存的结果不重复提醒');
+      const imageNodeId = await page.evaluate(async () => {
+        const id = await window.editor.addNode('image-generation', { x: 0, y: 800 });
+        window.editor.updateNodeData(id, { title: '客厅主视觉' });
+        window.editor.updateNodeData('video', { title: '客厅光影短片' });
+        return id;
+      });
+      const publish = (assetId, nodeId, seconds, tailAssetId) => {
+        const end = Date.now();
+        canvas.nodeCandidates.push({ nodeId, taskId: assetId, assetId, tailAssetId, variantIndex: 0, materialized: false,
+          createdAt: new Date(end - seconds * 1000).toISOString(), completedAt: new Date(end).toISOString() });
+      };
+      publish('new-video-1', 'video', 230, 'tail-frame');
+      publish('new-image', imageNodeId, 48);
+      const notice = page.getByRole('region', { name: '已完成任务' });
+      const videoRow = notice.getByRole('listitem').filter({ hasText: '客厅光影短片' });
+      const imageRow = notice.getByRole('listitem').filter({ hasText: '客厅主视觉' });
+      await videoRow.getByText('视频 · 耗时 230S', { exact: true }).waitFor();
+      await imageRow.getByText('图片 · 耗时 48S', { exact: true }).waitFor();
+      assert.equal(await notice.getByRole('listitem').count(), 2, '尾帧不单独计为任务');
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[aria-label="已完成任务"]');
+        return card?.querySelector('img')?.naturalWidth > 0 && card.querySelector('video')?.readyState >= 2;
+      });
+      if (engine === 'chromium') {
+        await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+        await notice.screenshot({ path: path.join(evidenceDir, '画布生成任务详情.png'), animations: 'disabled' });
+      }
+      await videoRow.getByRole('button').click();
+      await page.getByRole('dialog', { name: '视频全屏预览' }).waitFor();
+      await page.keyboard.press('Escape');
+      await imageRow.getByRole('button').click();
+      await page.getByRole('dialog', { name: '图片全屏预览' }).waitFor();
+      await page.keyboard.press('Escape');
+      publish('new-video-3', 'video', 6);
+      await notice.getByText('3 项任务').waitFor();
+      await until(() => presented.has('new-video-3'), '新结果须自动保存');
+      for (const [assetId, modelName, completedAt] of [
+        ['new-video-1', '可灵 4.0', '2026-11-25T04:30:00.000Z'],
+        ['new-video-3', 'Seedance 2.5', '2026-11-25T04:34:52.000Z'],
+      ]) {
+        const node = page.locator(`[data-node-kind="material"]:has(video[src$="/${assetId}"])`);
+        const label = node.getByTestId('canvas-video-result-info');
+        await label.getByText(`模型 · ${modelName}`).waitFor({ state: 'attached' });
+        assert.equal(await label.locator('time').getAttribute('datetime'), completedAt);
+      }
+      await dismissNotice.click();
+      await page.evaluate(() => window.fit({ padding: 0.1, duration: 0 }));
+      const imageButton = page.locator('button:has(img[src$="/tail-frame"])');
+      const preview = page.getByRole('dialog', { name: '图片全屏预览' });
+      await imageButton.click();
+      await preview.waitFor();
+      assert.deepEqual(await preview.boundingBox(), { x: 0, y: 0, ...page.viewportSize() });
+      assert.equal(await preview.locator('img').evaluate(img => img.naturalWidth), 640);
+      await page.keyboard.press('Escape');
+      await preview.waitFor({ state: 'detached' });
+      await imageButton.click();
+      await preview.getByRole('button', { name: '关闭全屏预览' }).click();
+      await preview.waitFor({ state: 'detached' });
+      await page.reload();
+      await page.waitForFunction(() => window.editor?.loadState === 'ready');
+      assert.equal(await dismissNotice.count(), 0, '刷新不重报已展示的视频或尾帧');
       assert.deepEqual(errors, []);
-      console.log(engine + ': recovery, one-click final, double-click guard, navigation save, deletion, 3 sizes × 2 themes passed (layout notifications: ' + layoutNotifications.length + ')');
+      console.log(engine + ': recovery, one-click final, navigation save, deletion, result notifications, fullscreen preview, 3 sizes × 2 themes passed (layout notifications: ' + layoutNotifications.length + ')');
     } finally { await browser.close(); }
   }
   console.log('creative-canvas-result-recovery.playwright.test.mjs passed');

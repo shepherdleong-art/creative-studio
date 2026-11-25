@@ -61,7 +61,8 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 ## `seed.ts` — 公司供应商开箱即用补种
 
 - 七牛 `qiniuyun/gpt-image-2.6-flare` / `qiniuyun/gpt-image-2.6-sunburst` 复用 `qiniuyun/gpt-image-2-medium` 的 LiteLLM 上游账号，以及工作台里的网关地址和名额池。部署时在 LiteLLM 配置中复制 Medium 的连接配置并替换两条模型别名，示例见 `litellm-config.example.yaml`。两个模型在项目与画布中独立选择。
-- 2026-11-19 经 LiteLLM 实测，两款 2.6 的 2K 方图均交付原生 1440×1440 PNG。1K 方图被七牛改为 1080×1080 后上游拒绝，两个失败单均全额退回。工作台沿用七牛 2K/4K 尺寸表，其余规格及参考图未做 2.6 付费验收。每款成功样本的最终净额是 ¥0.486864，工作台暂按 ¥0.49/张估算，网关按 token 结算。
+- 2026-11-19 经 LiteLLM 实测，两款 2.6 的 2K 方图均交付原生 1440×1440 PNG。1K 方图被七牛改为 1080×1080 后上游拒绝，两个失败单均全额退回。工作台沿用七牛 2K/4K 尺寸表。每款成功样本的最终净额是 ¥0.486864，工作台暂按 ¥0.49/张估算，网关按 token 结算。
+- 2026-11-23 在同一对参考图、同一提示词和 4K 16:9 参数下实测 Sunburst。CDN 地址单发成功、双发均报告取图超时，换成同一对象的 COS 区域源站地址后双发均交付 3840×2160 PNG。画布为 Sunburst 优先使用已配置为签名 Host 的区域源站，每次提交前用限时 Range GET 检查可读性，失败沿用原 CDN 签名链接。其余 2.6 规格仍按各自的实测记录判断。
 
 公司 `minimax-h3` / `wan-3.0` 复用可灵 Key 与 `/v1/videos` 腾讯透传通道，使用 `FileInfos` 显式首尾帧角色和 `OutputConfig`；工作台分别默认 2K / 1080P，时长分别 4–15 / 2–30 秒。单帧与双帧都要求回环 LiteLLM + COS，不传可灵智能分镜字段。Wan 必须显式传 `OutputConfig.AspectRatio`（首帧吸附五种标准比例，adaptive 创建前 400）；H3 省略比例。各一条 4:3 双帧真实任务已确认首尾构图收束：H3 请求 4 秒实返 1920×1440 / 4.459 秒，Wan 请求 2 秒实返 1662×1246 / 视频轨道 2 秒。证据与未验收边界见 [2026-10-28 接入记录](../2026-10-28-MiniMaxH3与Wan3公司模型接入.md)。
 
@@ -72,6 +73,8 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 2026-10-09 七牛可灵智能分镜出现上游兼容问题：本地适配器经 LiteLLM 已确认发送 `intelligence`，但新建真实任务仍回 `modelink_task_failed` 并报告 `intelligent` 无效。单条授权对照关闭智能分镜后成功；旧任务重试保留原开关。不要将本地请求测试通过等同于真实恢复，见 [排查与对照证据](../2026-10-09-七牛可灵智能分镜上游排查.md)。
 
 七牛可灵 `qiniuyun/kling-3.0` 通过本机 LiteLLM + 公司 `/v1/videos`：`images[0]` 首帧、`end_image_url` 尾帧；Pro 默认配公司 1K 名义 `size`（3:4 实测 `1024x1366` → `1244x1660`），单提示词智能分镜用 `multi_shot=true` + `shot_type=intelligence`，关闭显式 false，不传 `multi_prompt`。上游枚举为 `intelligence` / `customize`，`intelligent` 会被拒绝。首尾帧/清晰度证据见 [2026-09-10 验证记录](../2026-09-10-七牛Kling-v3公司通道首尾帧验证.md)。
+
+七牛可灵 4.0 的图生视频画幅由首帧决定。2026-11-25 公司网关拒绝了携带 `size=1080x1440` 的关键帧请求。项目与画布的关键帧请求仅发送 `resolution` 指定清晰度。画布选择固定比例时居中裁切关键帧的 COS 上传副本，自动档跟随原首帧。画布全能参考按所选画幅提交 `aspect_ratio`。[七牛图生视频接口](https://docs.modelink.ai/api/video-fal-kling-v4) · [可灵 4.0 全能参考参数](https://fal.ai/models/kling/v4/reference-to-video/api)
 
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 - COS 密钥只在 `.env.local`，签名参数绝不进日志。

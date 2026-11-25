@@ -16,7 +16,10 @@ export async function readVideoSourceReference(db: Database.Database, imageId: s
     const metadata = await sharp(file).metadata();
     const mimeType = ({ jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' } as Record<string, string>)[metadata.format ?? ''];
     if (!mimeType || (metadata.pages ?? 1) > 1) throw new Error('unsupported image');
-    return { id: image.id, kind: 'image' as const, path: file, mimeType, byteSize: stat.size, durationSec: null };
+    return {
+      id: image.id, kind: 'image' as const, path: file, mimeType, byteSize: stat.size, durationSec: null,
+      longestEdge: Math.max(metadata.width, metadata.height),
+    };
   } catch {
     throw new Error('当前分镜图无法读取，请重新选择有效的 PNG、JPEG 或 WebP 图片');
   }

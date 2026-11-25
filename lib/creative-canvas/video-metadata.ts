@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { SEEDANCE_25 } from '../video-providers/seedance-contract.ts';
+import { findCanvasCapability } from './capabilities.ts';
 
 export type CanvasGenerationStage = 'direct' | 'draft' | 'final-from-draft';
 export interface CanvasVideoMetadata {
@@ -82,4 +83,29 @@ export function assertDraftSourceMatches(source: CanvasDraftSource, model: strin
 export function canvasVideoMetadataForAsset(db: Database.Database, assetId: string): CanvasVideoMetadata | null {
   const row = db.prepare(`SELECT m.metadataJson FROM creative_canvas_tasks t JOIN creative_canvas_video_metadata m ON m.taskId = t.id WHERE t.outputAssetId = ?`).get(assetId) as { metadataJson: string } | undefined;
   return row ? JSON.parse(row.metadataJson) as CanvasVideoMetadata : null;
+}
+
+export interface CanvasVideoResultInfo {
+  model: string;
+  modelName: string;
+  completedAt: string;
+}
+
+/** The result points to the producing task even after the graph or its model changes. */
+export function canvasVideoResultInfo(db: Database.Database, canvasId: string, assetId: string): CanvasVideoResultInfo | null {
+  const row = db.prepare(`SELECT
+      json_extract(providerSnapshot, '$.modelAlias') AS model,
+      json_extract(providerSnapshot, '$.capabilityKey') AS capabilityKey,
+      updatedAt AS completedAt
+    FROM creative_canvas_tasks
+    WHERE canvasId = ? AND outputAssetId = ? AND mediaKind = 'video'
+      AND phase IN ('succeeded', 'cancelled')`).get(canvasId, assetId) as
+    { model: string | null; capabilityKey: string | null; completedAt: string } | undefined;
+  if (!row?.model) return null;
+  const capability = findCanvasCapability(row.capabilityKey);
+  return {
+    model: row.model,
+    modelName: capability?.modelAlias === row.model ? capability.displayName : row.model,
+    completedAt: row.completedAt,
+  };
 }

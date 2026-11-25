@@ -10,6 +10,7 @@ import { registerCanvasCapability, clearCanvasCapabilities, type CanvasModelCapa
 import { createCanvas, publishCanvasNodeResult, saveCanvasGraph, setCanvasNodeActiveTask } from '../lib/creative-canvas/repository.ts';
 import { importCanvasAsset, canvasStorageRoot } from '../lib/creative-canvas/assets.ts';
 import { planCanvasRun, reachableGenerationNodes } from '../lib/creative-canvas/planner.ts';
+import { COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES } from '../lib/creative-canvas/adapters/company-capabilities.ts';
 import { startCanvasRun } from '../lib/creative-canvas/runs.ts';
 import { copyCanvasNodes } from '../lib/creative-canvas/copy.ts';
 import { findActiveTaskForCanvasNode, listCanvasTasks } from '../lib/creative-canvas/tasks.ts';
@@ -1033,6 +1034,27 @@ function publishResultFor(canvasId: string, nodeId: string, assetId: string): vo
   } });
   const unknown = planCanvasRun(db, { canvasId: shared.id, mode: 'single', targetNodeId: 'image', requestKey: 'shared-unknown' });
   assert.equal(unknown.ok, false, '提示词本地的未知编号不能碰巧解析为下游的同号文本槽位');
+}
+
+// 切换自时长下拉使用字符串枚举的模型后，旧节点仍可生成，任务冻结整数秒数。
+{
+  const nodes = COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES.map((capability) => {
+    registerCanvasCapability(capability);
+    const node = videoNode(`v-${capability.modelAlias}`, capability.key, '保持主体，自然运镜');
+    node.data.generationMode = 'reference-to-video';
+    node.data.parameters = { durationSec: '12', aspectRatio: '9:16' };
+    return node;
+  });
+  const saved = save({
+    nodes: [material('duration-reference', 'image', assetA), ...nodes],
+    edges: nodes.map((node) => ({ id: `ref-${node.id}`, source: 'duration-reference', target: node.id })),
+  }, revision);
+  for (const node of nodes) {
+    const result = planCanvasRun(db, { canvasId: canvas.id, mode: 'single', targetNodeId: node.id,
+      requestKey: `legacy-duration-${node.id}`, expectedGraphRevision: saved.graphRevision });
+    assert.ok(result.ok, result.ok ? undefined : JSON.stringify(result.problems));
+    assert.equal(result.plan.tasks[0].parameters.durationSec, 12);
+  }
 }
 
 db.close();

@@ -146,6 +146,67 @@ try {
   assert.equal(companyRequest.omniReferenceTaskType, 'reference');
   assert.ok(!('sourceImagePath' in companyRequest) && !('tailImagePath' in companyRequest));
 
+  project('oversized-company-source');
+  const largePng = path.join(root, 'large-source.png');
+  const largeBytes = await sharp({ create: { width: 1600, height: 2400, channels: 4, background: '#33669980' } })
+    .png({ compressionLevel: 0 }).toBuffer();
+  assert.ok(largeBytes.length > 10 * 1024 * 1024);
+  fs.writeFileSync(largePng, largeBytes);
+  db.prepare("UPDATE image_assets SET originalPath=? WHERE id='poster-oversized-company-source'").run(largePng);
+  for (const [model, resolution] of [['minimax-h3', '2K'], ['wan-3.0', '1080P'], ['qiniuyun/kling-4.0', '1080p']]) {
+    const id = `large-${model}`;
+    provider(id, 'openai-video', model, 'http://127.0.0.1:4000');
+    job({ id, projectId: 'oversized-company-source', providerId: id, model, resolution });
+  }
+  cos._resetCosMediaCacheForTest();
+  const uploads: Buffer[] = [];
+  globalThis.fetch = async (_url, input) => {
+    if (input?.method === 'PUT') {
+      assert.ok(Buffer.isBuffer(input.body));
+      uploads.push(input.body);
+      return new Response(null, { status: 200 });
+    }
+    return new Response(null, { status: 404 });
+  };
+  const oversizedRequests = new Map<string, SubmitReferenceVideoRequest>();
+  providers.registerTestVideoAdapter('openai-video', failedAdapter(request => {
+    oversizedRequests.set(request.model, request);
+    return { providerTaskId: 'remote-' + request.model, rawResponse: null };
+  }));
+  await queue.runVideoQueue({ projectId: 'oversized-company-source', concurrency: 3, timeoutMs: 60_000 });
+  assert.equal(oversizedRequests.size, 3, '大图压缩成功后才提交三种全能参考任务');
+  assert.equal(oversizedRequests.get('qiniuyun/kling-4.0')?.resolution, '1080p');
+  for (const { references } of oversizedRequests.values()) {
+    assert.equal(references.length, 1);
+    assert.equal(references[0].mimeType, 'image/png');
+    assert.ok(references[0].url.startsWith('https://cos.example.test/'));
+  }
+  assert.ok(uploads.length > 0);
+  for (const bytes of uploads) {
+    assert.ok(bytes.length <= 10 * 1024 * 1024);
+    const { format, hasAlpha, width, height } = await sharp(bytes).metadata();
+    assert.deepEqual({ format, hasAlpha, width, height }, { format: 'png', hasAlpha: true, width: 1600, height: 2400 });
+  }
+  assert.ok(fs.readFileSync(largePng).equals(largeBytes));
+
+  project('h3-dimension-limit');
+  provider('h3-dimension-limit', 'openai-video', 'minimax-h3', 'http://127.0.0.1:4000');
+  const tallPath = path.join(root, 'tall-reference.jpg');
+  const tallImage = await sharp({ create: { width: 4342, height: 6513, channels: 3, background: '#336699' } })
+    .jpeg().toBuffer();
+  assert.ok(tallImage.length < 10 * 1024 * 1024, '图片仅超像素限制，未超文件大小限制');
+  fs.writeFileSync(tallPath, tallImage);
+  db.prepare("UPDATE image_assets SET originalPath=? WHERE id='poster-h3-dimension-limit'").run(tallPath);
+  job({ id: 'h3-tall-source', projectId: 'h3-dimension-limit', providerId: 'h3-dimension-limit', model: 'minimax-h3', resolution: '2K' });
+  uploads.length = 0;
+  oversizedRequests.clear();
+  await queue.runVideoQueue({ projectId: 'h3-dimension-limit', concurrency: 1, timeoutMs: 60_000 });
+  assert.ok(oversizedRequests.has('minimax-h3'), 'H3 超边长参考副本规整后应提交');
+  assert.equal(uploads.length, 1);
+  const { width: h3Width, height: h3Height } = await sharp(uploads[0]).metadata();
+  assert.deepEqual([h3Width, h3Height], [3840, 5760], 'H3 交给供应商的图须等比缩到允许边长');
+  assert.ok(fs.readFileSync(tallPath).equals(tallImage));
+
   project('company-delivery-failure');
   provider('company-failure-25', 'openai-video', 'doubao-seedance-2-5-260628', 'http://127.0.0.1:4000');
   referenceAsset('company-failure-image', 'company-delivery-failure', 'image');

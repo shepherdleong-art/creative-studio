@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import {
   isPrivateOrLocalHttpUrl,
@@ -6,6 +7,7 @@ import {
 import {
   getCosVideoCompressOptions,
   isCosMediaConfigured,
+  tryUploadBufferToCosAndSign,
   tryUploadToCosAndSign,
 } from '../cos-media.ts';
 import { normalizeGatewayResultUrl, sanitizeGatewayMediaDiagnostic } from '../gateway-media-url.ts';
@@ -18,13 +20,35 @@ import {
 import { shouldInjectCompanyKlingMultiShot } from '../video-multi-shot.ts';
 import { videoDurationError } from '../video-duration.ts';
 import { providerHttpError } from '../media-core/submission-evidence.ts';
+import { encodeImageWithinByteBudget } from '../media-core/image-byte-budget.ts';
 import { companyNativeVideoModel } from '../company-gateway-video-models.ts';
 import {
-  QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields, validateQiniuKling4MiddleFrames,
+  QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_MODEL,
+  qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields, validateQiniuKling4MiddleFrames,
 } from '../company-qiniu-kling-4.ts';
 import { validateVideoReferenceRequest, videoReferenceCapability } from '../video-reference-contract.ts';
 import { createCompanySeedanceVideoAdapter } from './company-seedance-video.ts';
+import { VideoReferenceMediaError } from './reference-media.ts';
 import type { VideoProviderAdapter, SubmitVideoRequest, SubmitVideoResult, PollVideoResult } from './types';
+
+async function uploadQiniuKling4Frame(filePath: string, label: string, signal?: AbortSignal): Promise<string> {
+  try {
+    signal?.throwIfAborted();
+    const original = await readFile(filePath);
+    const { format, hasAlpha, width, height } = await sharp(original).metadata();
+    const mimeType = format === 'png' || hasAlpha ? 'image/png' : 'image/jpeg';
+    const bytes = (format === 'png' || format === 'jpeg') && original.length <= QINIU_KLING_4_IMAGE_MAX_BYTES
+      ? original
+      : await encodeImageWithinByteBudget(original, mimeType, Math.max(width ?? 0, height ?? 0), QINIU_KLING_4_IMAGE_MAX_BYTES, signal);
+    signal?.throwIfAborted();
+    const url = await tryUploadBufferToCosAndSign(bytes, mimeType, { compress: false });
+    signal?.throwIfAborted();
+    if (url) return url;
+  } catch {
+    signal?.throwIfAborted();
+  }
+  throw new VideoReferenceMediaError(`可灵 4.0 ${label}准备或上传失败，请检查图片和 COS 配置后重试。`, 'reference_preparation_failed');
+}
 
 /**
  * OpenAI-style video API adapter (Sora 2 标准字段），适用于 New API 一类的
@@ -165,7 +189,11 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     // 否则回退本机 HTTP URL——自动探测到的私网地址不可用时，要求用户显式配置公开地址。
     let imageRef: string | null = null;
     let tailImageRef: string | null = null;
-    if (hasTailImagePath) {
+    if (isQiniuKling4) {
+      await assertCompanyTailFrameTransport(cleanBase);
+      imageRef = await uploadQiniuKling4Frame(request.sourceImagePath, '首帧', signal);
+      if (request.tailImagePath) tailImageRef = await uploadQiniuKling4Frame(request.tailImagePath, '尾帧', signal);
+    } else if (hasTailImagePath) {
       // 公司尾帧（D9 硬门禁）：只允许本机回环 LiteLLM + COS 预签名 URL，
       // 首帧尾帧都走 COS，禁止回退本机/公网 URL；门禁或上传失败时不得发出 POST。
       await assertCompanyTailFrameTransport(cleanBase);
@@ -224,10 +252,7 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
     if (isQiniuKling4) {
       const middleUrls: string[] = [];
       for (const frame of request.middleFrames ?? []) {
-        signal?.throwIfAborted();
-        const url = await tryUploadToCosAndSign(frame.path, frame.mimeType, { compress: false });
-        if (!url) throw new Error('中间帧上传 COS 未返回可用地址，任务未提交');
-        middleUrls.push(url);
+        middleUrls.push(await uploadQiniuKling4Frame(frame.path, '中间帧', signal));
       }
       Object.assign(body, qiniuKling4FirstFrameFields(imageRef, request.durationSec, middleUrls, request.resolution));
     }
@@ -279,7 +304,6 @@ export const openaiVideoAdapter: VideoProviderAdapter = {
       }
       const sourceDims = await probeImageDimensions(request.sourceImagePath);
       if (isQiniuKling && !sourceDims) throw new Error('无法读取七牛可灵首帧尺寸，不能确定 1080P 输出比例，任务未提交');
-      if (isQiniuKling4 && !sourceDims) throw new Error('无法读取七牛可灵 4.0 首帧尺寸，任务未提交');
       if (tailProtocol === 'company-gateway-kling') {
         const requestedAspect = request.aspectRatio && companyCaps.ratios.includes(request.aspectRatio)
           ? request.aspectRatio

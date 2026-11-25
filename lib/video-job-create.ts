@@ -11,10 +11,9 @@ import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-f
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
-import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import {
-  QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS,
-  supportsQiniuKling4Modes, validateQiniuKling4MiddleFrames,
+  QINIU_KLING_4_PROJECT_RESOLUTION,
+  supportsQiniuKling4Modes,
 } from './company-qiniu-kling-4.ts';
 import { requireAccessContext } from './media-core/access-context.ts';
 import {
@@ -173,6 +172,9 @@ export async function createVideoJobsForShot(input: {
   }
   for (const [index, item] of items.entries()) {
     const provider = providerCache.get(item.providerId)!;
+    if (item.generationMode === 'frames-to-video') {
+      return { ok: false, status: 400, error: itemError(index, '所选模型不支持多关键帧') };
+    }
     const durationError = videoDurationError(provider.type, provider.model, item.durationSec);
     if (durationError) return { ok: false, status: 400, error: itemError(index, durationError) };
   }
@@ -278,19 +280,16 @@ export async function createVideoJobsForShot(input: {
         frozen,
       };
     }
+    const isKling4 = supportsQiniuKling4Modes(provider.type, provider.model);
+    if (isKling4 && item.resolution && item.resolution !== QINIU_KLING_4_PROJECT_RESOLUTION) {
+      return { error: itemError(index, '普通项目的可灵 4.0 固定使用 1080p。') };
+    }
     if (item.generationMode !== 'reference-to-video') {
-      const isKling4 = supportsQiniuKling4Modes(provider.type, provider.model);
-      if (item.generationMode === 'image-to-video' && item.referenceAssetIds.length > 0) {
+      if (item.referenceAssetIds.length > 0) {
         return { error: itemError(index, '首尾帧模式不得携带全能参考素材') };
       }
-      if (item.generationMode === 'frames-to-video' && !isKling4) {
-        return { error: itemError(index, '所选模型不支持多关键帧') };
-      }
-      const resolution = isKling4 ? item.resolution ?? QINIU_KLING_4_DEFAULT_RESOLUTION
+      const resolution = isKling4 ? QINIU_KLING_4_PROJECT_RESOLUTION
         : item.filmGenerationStage ? item.resolution : null;
-      if (isKling4 && resolution && !QINIU_KLING_4_RESOLUTIONS.some(tier => tier === resolution)) {
-        return { error: itemError(index, `输出清晰度 ${resolution} 不受支持`) };
-      }
       return { item, provider,
         aspectRatio: item.filmGenerationStage ? item.aspectRatio : null,
         resolution,
@@ -312,7 +311,7 @@ export async function createVideoJobsForShot(input: {
       aspectRatio = capability.aspectRatios.includes('16:9') ? '16:9' : (specificRatios[0] ?? null);
     }
     if (!aspectRatio) return { error: itemError(index, '模型没有可用的非自适应输出比例') };
-    const resolution = item.resolution ?? capability.defaultResolution;
+    const resolution = isKling4 ? QINIU_KLING_4_PROJECT_RESOLUTION : item.resolution ?? capability.defaultResolution;
     if (item.resolution && !capability.resolutions.includes(item.resolution)) {
       return { error: itemError(index, `输出清晰度 ${item.resolution} 不受支持`) };
     }
@@ -338,10 +337,8 @@ export async function createVideoJobsForShot(input: {
           model: provider.model,
         });
         if (!tail.ok) return { ok: false as const, error: tail.error };
-        if (item.generationMode === 'image-to-video') {
-          referencesByItem.push([]);
-          continue;
-        }
+        referencesByItem.push([]);
+        continue;
       }
       if (new Set(item.referenceAssetIds).size !== item.referenceAssetIds.length) {
         return { ok: false as const, error: itemError(index, '素材不能重复') };
@@ -354,12 +351,6 @@ export async function createVideoJobsForShot(input: {
         if (!asset) throw new VideoReferenceCreationError(itemError(index, `参考素材 ${assetId} 不存在或不属于当前项目`));
         return asset;
       });
-      if (item.generationMode === 'frames-to-video') {
-        const problem = validateQiniuKling4MiddleFrames(references);
-        if (problem) return { ok: false as const, error: itemError(index, problem) };
-        referencesByItem.push(references);
-        continue;
-      }
       const effectiveReferences = references.length ? references : [sourceReference!];
       const problems = validateVideoReferenceRequest({
         providerType: provider.type,
@@ -368,7 +359,7 @@ export async function createVideoJobsForShot(input: {
         durationSec: item.durationSec,
         aspectRatio: aspectRatio ?? undefined,
         resolution: resolution ?? undefined,
-      }, { deferImageByteLimit: references.length === 0 && provider.model === SEEDANCE_25 });
+      }, { deferImageByteLimit: references.length === 0 });
       if (problems.length > 0) return { ok: false as const, error: itemError(index, problems.join('；')) };
       referencesByItem.push(references);
     }

@@ -446,13 +446,14 @@ export interface CanvasNodeCandidate {
   assetId: string;
   variantIndex: number;
   createdAt: string;
+  completedAt: string;
 }
 
 export function listCanvasNodeCandidates(db: Database.Database, canvasId: string): CanvasNodeCandidate[] {
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('canvas', canvasId, 'read');
   const rows = db.prepare(
-    `SELECT t.nodeId, t.id AS taskId, t.outputAssetId, t.variantIndex, t.createdAt,
+    `SELECT t.nodeId, t.id AS taskId, t.outputAssetId, t.variantIndex, t.createdAt, t.updatedAt AS completedAt,
             json_extract(m.metadataJson, '$.tailAssetId') AS tailAssetId,
             p.assetId IS NOT NULL AS materialized, tp.assetId IS NOT NULL AS tailMaterialized
        FROM creative_canvas_tasks t
@@ -479,6 +480,7 @@ export function listCanvasNodeCandidates(db: Database.Database, canvasId: string
       assetId: String(row.outputAssetId),
       variantIndex: Number(row.variantIndex ?? 0),
       createdAt: String(row.createdAt),
+      completedAt: String(row.completedAt),
     });
     perNode.set(nodeId, bucket);
   }

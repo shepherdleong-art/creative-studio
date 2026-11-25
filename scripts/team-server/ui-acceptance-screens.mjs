@@ -116,8 +116,30 @@ export const SCREENS = [
   }),
   base('canvas', '创作画布列表', 'ui-14', {
     href: () => '/canvas',
-    // 14 号票起标题由每页工具栏渲染（= 导航名「创作画布」），不再是页内 h1。
-    ready: async (page) => { await page.getByTestId('page-toolbar-title').first().waitFor({ timeout: 60_000 }); },
+    skipUnless: 'canvasList',
+    ready: async (page) => {
+      await page.getByRole('link', { name: '画布删除验收', exact: true }).waitFor({ timeout: 60_000 });
+    },
+    actions: [
+      async (page) => {
+        await page.getByRole('button', { name: '删除画布 画布删除验收' }).click();
+        await page.getByRole('dialog', { name: '删除画布' }).waitFor();
+      },
+      async (page) => {
+        await page.getByRole('button', { name: '取消', exact: true }).click();
+        await page.getByRole('button', { name: '表格', exact: true }).click();
+        await page.getByRole('row').filter({ hasText: '画布删除验收' })
+          .getByRole('button', { name: '删除画布 画布删除验收' }).click();
+        await page.getByRole('dialog', { name: '删除画布' }).waitFor();
+      },
+      async (page, { fixture }) => {
+        await page.getByRole('button', { name: '确认删除', exact: true }).click();
+        await page.getByText('还没有画布', { exact: true }).waitFor();
+        await fixture.api.json(fixture.employeeSession, '/api/team/recycle-bin/restore', 'POST', {
+          resourceType: 'canvas', resourceId: fixture.canvasListItem.id,
+        });
+      },
+    ],
   }),
   // 06 号票：员工任务页接服务端分页后，数据由 taskHistory 钩子造（含员工自己的统一任务）。
   base('tasks-employee', '我的任务（分页与详情）', '06', {

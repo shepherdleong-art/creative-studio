@@ -3,10 +3,12 @@ export const QINIU_KLING_4_PROVIDER_ID = 'company-qiniuyun-kling-4-0';
 export const QINIU_KLING_4_PROVIDER_NAME = '公司七牛可灵 4.0';
 export const QINIU_KLING_4_RESOLUTIONS = ['720p', '1080p'] as const;
 export const QINIU_KLING_4_DEFAULT_RESOLUTION = QINIU_KLING_4_RESOLUTIONS[0];
+export const QINIU_KLING_4_PROJECT_RESOLUTION = '1080p';
 export const QINIU_KLING_4_MAX_MIDDLE_FRAMES = 8;
 export const QINIU_KLING_4_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png'] as const;
 export const QINIU_KLING_4_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const QINIU_KLING_4_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const;
+export const QINIU_KLING_4_CANVAS_ASPECT_RATIOS = [...QINIU_KLING_4_ASPECT_RATIOS, '4:3', '3:4', '21:9', 'adaptive'] as const;
 
 export function supportsQiniuKling4Modes(providerType: string, model: string): boolean {
   return providerType === 'openai-video' && model === QINIU_KLING_4_MODEL;
@@ -49,7 +51,7 @@ export function qiniuKling4ReferenceFields(
   };
 }
 
-/** 项目和画布共用七牛关键帧字段，images 只携带首帧。 */
+/** 七牛关键帧画幅随首帧。网关的 size 会触发显式比例校验，关键帧请求只携带 resolution。 */
 export function qiniuKling4FirstFrameFields(
   firstFrameUrl: string,
   durationSec: number,

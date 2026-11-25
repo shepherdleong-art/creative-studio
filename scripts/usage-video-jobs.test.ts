@@ -12,6 +12,7 @@ import { videoJobUsageMeasurement } from '../lib/usage-video-measurement.ts';
 import { reconcileUsageLedger } from '../lib/usage-ledger.ts';
 import { parseUsageSnapshot } from '../lib/usage-snapshot.ts';
 import { initUsageSchema } from '../lib/usage-schema.ts';
+import { QINIU_KLING_4_MODEL, QINIU_KLING_4_PROJECT_RESOLUTION, QINIU_KLING_4_PROVIDER_ID } from '../lib/company-qiniu-kling-4.ts';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
@@ -252,13 +253,16 @@ for (const [jobId, provider, requestModel] of [
   const resumeSource = fs.readFileSync(path.resolve('app/api/video-jobs/[id]/resume-poll/route.ts'), 'utf8');
   const submitIndex = queueSource.indexOf('adapter.submit(');
   const snapshotIndex = queueSource.indexOf('persistVideoJobUsageSnapshot(');
-  const successIndex = queueSource.indexOf("status = 'succeeded'");
+  const successIndex = queueSource.indexOf('const completeResult = db.prepare(');
   const recordIndex = queueSource.indexOf('recordVideoJobUsage(');
   assert.ok(snapshotIndex >= 0 && submitIndex >= 0 && snapshotIndex < submitIndex, 'queue must freeze before adapter.submit');
   assert.match(queueSource, /existingTaskId/);
   assert.match(queueSource, /if \(existingTaskId\)/, 'existing remote task must skip submit/snapshot');
-  assert.ok(recordIndex > successIndex, 'queue must record only after atomic success');
-  assert.match(queueSource, /WHERE id = \? AND status = 'running'/, 'queue success must be atomic');
+  assert.ok(successIndex >= 0 && recordIndex > successIndex, 'queue must record only after atomic success');
+  const completionUpdate = queueSource.slice(successIndex, recordIndex);
+  assert.match(completionUpdate, /providerStatus = 'succeeded'/);
+  assert.match(completionUpdate, /WHERE id = \? AND \(status = 'running'/, 'queue success must guard the prior state');
+  assert.match(completionUpdate, /if \(completeResult\.changes === 1\)\s*\{\s*const usageResult = $/, 'only the worker that finalized the job records usage');
   assert.match(resumeSource, /await resumeVideoJobPolling\(id\)/, 'resume route must delegate to the shared queue');
   const resumeWorkerSource = queueSource.slice(queueSource.indexOf('export async function resumeVideoJobPolling('), queueSource.indexOf('async function runAuthorizedVideoJob('));
   assert.match(resumeWorkerSource, /await runVideoJob\(/, 'resume must use the queue success/usage transaction checked above');
@@ -323,6 +327,33 @@ for (const [resolution, rate] of [['768P', 500_000], ['2K', 800_000]] as const) 
   assert.equal(freeze(db, 'h3-old', provider), JSON.stringify(historical));
   assert.equal(recordVideoJobUsage(db, { jobId: 'h3-old', durationSec: 5, finishedAt: '2026-11-11' }).inserted, true);
   assert.equal((db.prepare("SELECT costMicros FROM usage_ledger WHERE refId = 'h3-old'").get() as { costMicros: number }).costMicros, 4_000_000);
+  db.close();
+}
+
+{
+  const db = createDb();
+  const provider = { id: QINIU_KLING_4_PROVIDER_ID, type: 'openai-video', model: QINIU_KLING_4_MODEL };
+  db.exec(`CREATE TABLE video_reference_assets (id TEXT PRIMARY KEY, projectId TEXT, kind TEXT, durationSec REAL);
+    CREATE TABLE video_job_references (jobId TEXT, orderIndex INTEGER, assetId TEXT);
+    INSERT INTO video_reference_assets VALUES ('short', 'project-1', 'video', 3), ('long', 'project-1', 'video', 8.25);`);
+  for (const [id, reference, expectedSeconds, expectedCost] of [
+    ['ordinary', null, 5, 7_500_000], ['short-reference', 'short', 10, 9_000_000], ['long-reference', 'long', 13.25, 11_925_000],
+  ] as const) {
+    insertJob(db, { id, provider });
+    db.prepare("UPDATE video_jobs SET resolution = ?, generationMode = 'reference-to-video' WHERE id = ?")
+      .run(QINIU_KLING_4_PROJECT_RESOLUTION, id);
+    if (reference) db.prepare('INSERT INTO video_job_references VALUES (?, 0, ?)').run(id, reference);
+    const frozen = freeze(db, id, provider);
+    const parsed = parseUsageSnapshot(frozen);
+    assert.ok(parsed.ok);
+    const measurement = videoJobUsageMeasurement(parsed.parsed.snapshot, 99);
+    assert.equal(measurement?.quantity, expectedSeconds);
+    assert.equal(calculateUsageCostMicros(parsed.parsed.snapshot.priceComponents, measurement!.quantity), expectedCost);
+    db.prepare("UPDATE video_jobs SET status = 'succeeded', durationSec = 99, finishedAt = '2026-11-25T00:00:00Z' WHERE id = ?").run(id);
+    assert.equal(reconcileUsageLedger(db).recorded, 1);
+    assert.deepEqual(db.prepare('SELECT quantity, costMicros FROM usage_ledger WHERE refId = ?').get(id),
+      { quantity: expectedSeconds, costMicros: expectedCost });
+  }
   db.close();
 }
 

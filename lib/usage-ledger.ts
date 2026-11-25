@@ -1,4 +1,5 @@
-import { videoJobUsageMeasurement } from './usage-video-measurement.ts';
+import { readQiniuKling4JobUsage, videoJobUsageMeasurement } from './usage-video-measurement.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -975,12 +976,17 @@ function backfillNewBillingModels(db: Database.Database): { ok: boolean; inserte
           const provider: CoreUsageSnapshotV1['provider'] = { providerTable, providerId: row.providerId, providerName: row.providerName,
             providerType: row.providerType, configuredModel: row.configuredModel,
             requestModel: row.model, baseUrl: row.baseUrl };
-          const plan = resolveCoreUsagePlan(provider);
+          const qiniuUsage = kind === 'video' && row.model === QINIU_KLING_4_MODEL
+            ? readQiniuKling4JobUsage(db, row.id) : undefined;
+          if (qiniuUsage === null) continue;
+          const plan = resolveCoreUsagePlan(provider, qiniuUsage);
           if (!plan) continue;
           if (kind === 'video' && (!Number.isFinite(row.quantity) || Number(row.quantity) <= 0)) continue;
-          const quantity = kind === 'image' ? positiveAttempt(row.quantity) : Number(row.quantity);
+          const quantity = qiniuUsage?.estimatedBillingSeconds
+            ?? (kind === 'image' ? positiveAttempt(row.quantity) : Number(row.quantity));
           const createdAt = preferredLedgerTimestamp(row.finishedAt, row.startedAt);
           const snapshot = createCoreUsageSnapshot(provider, plan, { startedAt: createdAt,
+            estimatedBillingSeconds: qiniuUsage?.estimatedBillingSeconds,
             projectId: row.projectId ?? undefined, refType: kind === 'image' ? 'job' : 'video-job', refId: row.id });
           const result = recordUsage(db, { eventKey: `${kind}-job:${row.id}:succeeded`, snapshot,
             usage: { quantity, callCount: kind === 'image' ? quantity : 1,

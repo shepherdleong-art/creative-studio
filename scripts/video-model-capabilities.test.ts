@@ -25,11 +25,12 @@ try {
     provider('sd20', 'openai-video', 'doubao-seedance-2-0-260128'),
     provider('k25', 'openai-video', 'kling-2.5'),
     provider('q30', 'openai-video', 'qiniuyun/kling-3.0'),
+    provider('q40', 'openai-video', 'qiniuyun/kling-4.0'),
     provider('h3', 'openai-video', 'minimax-h3'),
     provider('wan', 'openai-video', 'wan-3.0'),
     provider('future', 'openai-video', 'kling-3.0-future'),
   ].map(p => ({ ...p, id: p.id!, name: p.name! }));
-  for (const id of ['h3', 'wan']) {
+  for (const id of ['h3', 'wan', 'q40']) {
     assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id }).generationMode, 'reference-to-video');
     assert.equal(resolveVideoGenerationSelection(providers, id, { providerId: '' }).generationMode, 'reference-to-video', 'Bulk defaults use the same mode');
     assert.equal(resolveVideoGenerationSelection(providers, '', { providerId: id, generationMode: 'image-to-video' }).generationMode, 'reference-to-video', '单图草稿自动使用全能参考');
@@ -38,6 +39,16 @@ try {
   }
   for (const id of ['sd20', 'sd25', 'k25', 'q30', 'future']) {
     assert.equal(resolveVideoGenerationSelection(providers, 'h3', { providerId: id }).generationMode, 'image-to-video', 'Switching back restores first/tail mode');
+  }
+  for (const mode of ['frames-to-video', 'reference-to-video'] as const) {
+    const kling4 = resolveVideoGenerationSelection(providers, '', {
+      providerId: 'q40', generationMode: mode, tailImageId: 'tail', resolution: '720p',
+    });
+    assert.equal(kling4.generationMode, 'image-to-video', '可灵 4.0 历史设置按首尾帧编辑');
+    assert.equal(kling4.capabilities.tailFrame.supported, true);
+    assert.equal(kling4.capabilities.reference.supported, true);
+    assert.equal(kling4.capabilities.fixedResolution, '1080p');
+    assert.deepEqual(kling4.requestOptions, { durationSec: 5, resolution: '1080p' });
   }
   const resolve = (providerId: string, durationSec: number, multiShot = false) =>
     resolveVideoGenerationSelection(providers, '', { providerId, durationSec, multiShot });
@@ -177,7 +188,8 @@ try {
     const old = resolveVideoGenerationSelection([legacy], '', { providerId: legacy.id, durationSec: 30, multiShot: false });
     const selection = resolveVideoGenerationSelection([current], '', { providerId: current.id, durationSec: 30, multiShot: false });
     assert.equal(old.durationSec, selection.durationSec);
-    assert.deepEqual(old.requestOptions, selection.requestOptions);
+    assert.deepEqual(old.requestOptions, selection.requestOptions.resolution
+      ? { durationSec: selection.durationSec } : selection.requestOptions);
     assert.deepEqual(old.capabilities.tailFrame, selection.capabilities.tailFrame);
     assert.deepEqual(old.capabilities.multiShot, selection.capabilities.multiShot);
     assert.deepEqual(old.capabilities.reference, { supported: false, reason: 'unsupported_model' });

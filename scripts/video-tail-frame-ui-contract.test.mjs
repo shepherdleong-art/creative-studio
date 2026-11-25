@@ -22,10 +22,7 @@ assert.match(panel, /<HoverZoomImage[\s\S]*alt="尾帧预览"/, 'loaded tail fra
 assert.doesNotMatch(panel, /className="flex h-14 cursor-pointer/, 'the old compact tail-frame upload strip must not return');
 assert.match(results, /job\.tailImageId[\s\S]*首尾帧/, 'result cards must identify tail-frame jobs');
 
-assert.match(panel, /const deleteReferenceAsset[\s\S]*response\.status !== 404 && response\.status !== 409/, 'reference delete must detach drafts on missing or job-protected assets');
-assert.match(panel, /releaseDraftReferenceAssets/, 'unsubmitted references must be released on reset/unmount');
-assert.match(panel, /pendingCreationReferenceIdsRef/, 'references in an active create request must be protected from draft cleanup');
-assert.match(panel, /referenceDeletionIdsRef/, 'in-flight reference deletion must not be duplicated by draft cleanup');
+assert.doesNotMatch(panel, /上传中间帧|上传参考素材|aria-label="生成模式"|aria-label="分辨率"/, 'ordinary projects use the first frame and optional tail with model-managed resolution');
 assert.match(panel, /\.\.\.serializeVideoGenerationFields\(row\)/, 'bulk request must use the same mode and ordered-reference serializer');
 assert.doesNotMatch(panel, /from ['"]@\/lib\/video-job-create/, 'browser draft code must not import the server creation module');
 

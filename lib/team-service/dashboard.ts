@@ -35,6 +35,7 @@ const MAX_RUNNING = 5;
 export interface DashboardProject {
   id: string;
   name: string;
+  workflowType: 'complex_product' | 'one_click_film';
   storeCode: string;
   productionType: string;
   productCode: string;
@@ -72,6 +73,7 @@ export interface EmployeeDashboard {
 type ProjectRow = {
   id: string;
   name: string;
+  workflowType: string;
   storeCode: string | null;
   productionType: string | null;
   productCode: string | null;
@@ -104,7 +106,7 @@ function readProjects(db: Database.Database, viewer: TeamViewer): ProjectRow[] {
       AND scope.deletedAt IS NULL
   )`;
   return db.prepare(`
-    SELECT p.id, p.name, p.storeCode, p.productionType, p.productCode, p.lastOpenedAt,
+    SELECT p.id, p.name, p.workflowType, p.storeCode, p.productionType, p.productCode, p.lastOpenedAt,
       (SELECT COUNT(*) FROM jobs WHERE projectId = p.id)
         + (SELECT COUNT(*) FROM video_jobs WHERE projectId = p.id) AS totalJobs,
       (SELECT COUNT(*) FROM jobs WHERE projectId = p.id AND status = 'succeeded')
@@ -241,6 +243,7 @@ export function readEmployeeDashboard(
       return {
         id: row.id,
         name: row.name,
+        workflowType: row.workflowType === 'one_click_film' ? 'one_click_film' : 'complex_product',
         storeCode: row.storeCode ?? '',
         productionType: row.productionType ?? '',
         productCode: row.productCode ?? '',

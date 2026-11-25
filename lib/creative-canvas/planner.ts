@@ -14,7 +14,7 @@ import { assertDraftSourceMatches, generationStage, requireCanvasDraftSource } f
 
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { findCanvasCapability, validateCapabilityInputs, type CanvasModelCapability } from './capabilities.ts';
+import { findCanvasCapability, normalizeCanvasParameterValue, validateCapabilityInputs, type CanvasModelCapability } from './capabilities.ts';
 import {
   COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY,
   COMPANY_CANVAS_UNIFIED_KLING3_CAPABILITY,
@@ -515,7 +515,7 @@ function buildTaskPlan(
   for (const [key, value] of Object.entries(node.data.parameters ?? {})) {
     const declared = declaredParameters.get(key);
     if (declared?.modes && !declared.modes.includes(node.data.generationMode)) continue;
-    effectiveParameters[key] = value;
+    effectiveParameters[key] = normalizeCanvasParameterValue(declared, value);
   }
 
   const unifiedImage2 = capability.key === COMPANY_CANVAS_UNIFIED_IMAGE2_CAPABILITY.key;

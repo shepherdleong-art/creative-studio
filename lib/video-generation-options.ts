@@ -1,4 +1,5 @@
 import { normalizeVideoDraftDuration, videoDurationOptions } from './video-duration.ts';
+import { QINIU_KLING_4_MODEL } from './company-qiniu-kling-4.ts';
 import type { TailFrameCapability } from './video-providers/types.ts';
 import type { VideoReferenceCapability } from './video-reference-contract.ts';
 
@@ -8,7 +9,7 @@ export interface VideoModelCapabilities {
   tailFrame: TailFrameCapability;
   multiShot: { supported: boolean; defaultEnabled: boolean };
   reference: VideoReferenceCapability;
-  keyframes?: boolean;
+  fixedResolution?: string;
 }
 
 export interface VideoGenerationProvider {
@@ -70,15 +71,12 @@ export function resolveVideoGenerationSelection(
   const durationSec = normalizeVideoDraftDuration(draft.durationSec ?? 5, capabilities.durations);
   const multiShot = draft.multiShot ?? capabilities.multiShot.defaultEnabled;
   const usesReferenceDefault = provider?.type === 'openai-video'
-    && ['minimax-h3', 'wan-3.0'].includes(provider.defaultModel);
+    && ['minimax-h3', 'wan-3.0', QINIU_KLING_4_MODEL].includes(provider.defaultModel);
   // This workbench uses the current shot as the reference. A tail image switches
-  // H3/Wan to first/last-frame generation, including drafts saved by older UIs.
-  const defaultMode = usesReferenceDefault && capabilities.reference.supported && !draft.tailImageId
+  // these models to first/last-frame generation, including drafts saved by older UIs.
+  const generationMode = usesReferenceDefault && capabilities.reference.supported && !draft.tailImageId
     ? 'reference-to-video' as const : 'image-to-video' as const;
-  const generationMode = capabilities.keyframes ? draft.generationMode ?? 'image-to-video' : defaultMode;
-  const resolution = capabilities.keyframes && capabilities.reference.supported
-    ? capabilities.reference.resolutions.find(tier => tier === draft.resolution) ?? capabilities.reference.defaultResolution
-    : undefined;
+  const resolution = capabilities.fixedResolution;
   return {
     providerId,
     generationMode,

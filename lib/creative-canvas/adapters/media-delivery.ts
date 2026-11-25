@@ -8,9 +8,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { dataRoot } from '../../data-root.ts';
+import { preferReadableCosOrigin } from '../../cos-media.ts';
+import { encodeImageWithinByteBudget } from '../../media-core/image-byte-budget.ts';
 import {
   deliverVideoReferenceMedia,
   precheckVideoReferenceDeliveryMedia,
+  prepareMiniMaxH3ReferenceImage,
   VIDEO_REFERENCE_DELIVERY_LIMITS,
   VideoReferenceMediaError,
 } from '../../video-providers/reference-media.ts';
@@ -28,10 +31,12 @@ export interface CanvasDeliveryRequest {
   role: CanvasReferenceRole;
   /** true：必须走 COS 预签名 URL，禁止回退本机／公网地址。 */
   requireCos: boolean;
+  preferCosOrigin?: boolean;
   /** 视频首帧／尾帧图：走视频压缩阈值，避免起点画质被压糊。 */
   isFrameImage: boolean;
   /** 已按模型限制生成的上传副本，禁止 COS 再次转码成模型不支持的格式。 */
   imageCompression?: false;
+  imageBuffer?: Buffer<ArrayBuffer>;
 }
 
 export interface CanvasMediaDeliverer {
@@ -48,6 +53,12 @@ export interface CanvasDeliveryPrecheckOptions {
   maxDurationSec?: number | null;
 }
 
+interface CanvasDeliveryPreparationOptions extends CanvasDeliveryPrecheckOptions {
+  modelAlias?: string;
+  cropToAspectRatio?: string;
+  outputImageMimeTypes?: readonly string[];
+}
+
 /** 交付前校验：类型、MIME、大小、时长。返回空数组表示可以交付。 */
 export function precheckCanvasDeliveryMedia(
   request: Pick<CanvasDeliveryRequest, 'kind' | 'mimeType' | 'byteSize' | 'durationSec' | 'absolutePath'>,
@@ -59,13 +70,14 @@ export function precheckCanvasDeliveryMedia(
 /** Prepare an upload copy before enforcing the model's byte budget. */
 export async function prepareCanvasDeliveryMedia(
   request: CanvasDeliveryRequest,
-  options: CanvasDeliveryPrecheckOptions = {},
+  options: CanvasDeliveryPreparationOptions = {},
   signal?: AbortSignal,
 ): Promise<{ request: CanvasDeliveryRequest; dispose: () => Promise<void> }> {
   signal?.throwIfAborted();
   const maxBytes = options.maxBytes ?? CANVAS_DELIVERY_LIMITS[request.kind].maxBytes;
   // 临时副本只用于 COS；本机 URL 必须继续引用长期保留的原文件。
   const canCompress = request.kind === 'image' && request.requireCos;
+  const cropToAspectRatio = canCompress ? options.cropToAspectRatio : undefined;
   const problems = precheckCanvasDeliveryMedia(request, {
     ...options, ...(canCompress ? { maxBytes: Infinity } : {}),
   });
@@ -74,7 +86,10 @@ export async function prepareCanvasDeliveryMedia(
       code: 'media_precheck_failed',
     });
   }
-  if (request.kind !== 'image' || request.byteSize <= maxBytes) {
+  if (canCompress && options.modelAlias === 'minimax-h3') {
+    return { request: await prepareMiniMaxH3CanvasImage(request, maxBytes, signal), dispose: async () => {} };
+  }
+  if (!cropToAspectRatio && (request.kind !== 'image' || request.byteSize <= maxBytes)) {
     // 模型收 JPEG/PNG 时保持已合规原图，避免通用 COS 压缩把透明 PNG 转成 WebP。
     const preserveFormat = request.kind === 'image' && request.requireCos && options.mimeTypes
       && !options.mimeTypes.includes('image/webp');
@@ -92,36 +107,18 @@ export async function prepareCanvasDeliveryMedia(
   try {
     const bytes = await fs.promises.readFile(request.absolutePath);
     const metadata = await sharp(bytes).metadata();
-    const allowedMime = options.mimeTypes ?? CANVAS_DELIVERY_LIMITS.image.mimeTypes;
+    const allowedMime = options.outputImageMimeTypes ?? options.mimeTypes ?? CANVAS_DELIVERY_LIMITS.image.mimeTypes;
     // Preserve transparency with PNG when the model does not accept WebP (H3 / Wan).
     const mimeType = metadata.hasAlpha && allowedMime.includes('image/png')
       ? 'image/png' : allowedMime.includes('image/jpeg') ? 'image/jpeg' : request.mimeType;
-    const longestEdge = Math.max(metadata.width ?? 0, metadata.height ?? 0);
-    if (!longestEdge) throw new Error('missing dimensions');
-    const targetBytes = Math.floor(maxBytes * 0.95);
-    let compressed: Buffer | null = null;
-    // Keep dimensions first; only reduce them if changing JPEG/WebP quality is insufficient.
-    for (let scale = 0; scale <= 10 && !compressed; scale++) {
-      const qualities = mimeType === 'image/png' ? [95] : scale === 0 ? [95, 90, 82] : [90];
-      for (const quality of qualities) {
-        signal?.throwIfAborted();
-        let pipeline = sharp(bytes).rotate();
-        if (scale > 0) {
-          const maxDim = Math.max(1, Math.floor(longestEdge * 0.75 ** scale));
-          pipeline = pipeline.resize({ width: maxDim, height: maxDim, fit: 'inside', withoutEnlargement: true });
-        }
-        const candidate = await (mimeType === 'image/png'
-          ? pipeline.png({ compressionLevel: 9 })
-          : mimeType === 'image/webp' ? pipeline.webp({ quality }) : pipeline.jpeg({ quality, mozjpeg: true })
-        ).toBuffer();
-        if (candidate.length <= targetBytes) {
-          compressed = candidate;
-          break;
-        }
-      }
+    const { width, height } = metadata.autoOrient;
+    const crop = cropToAspectRatio ? frameCrop(width, height, cropToAspectRatio) : null;
+    if (!crop && bytes.length <= maxBytes && allowedMime.includes(request.mimeType)) {
+      return { request: { ...request, imageCompression: false }, dispose };
     }
-    signal?.throwIfAborted();
-    if (!compressed) throw new Error('image still exceeds budget');
+    const image = crop ? await sharp(bytes).autoOrient().extract(crop).png().toBuffer() : bytes;
+    const compressed = await encodeImageWithinByteBudget(image, mimeType,
+      Math.max(crop?.width ?? width, crop?.height ?? height), maxBytes, signal);
     const prepared = { ...request, mimeType, byteSize: compressed.length, imageCompression: false as const };
     const remainingProblems = precheckCanvasDeliveryMedia(prepared, options);
     if (remainingProblems.length) throw new Error('compressed image failed validation');
@@ -134,10 +131,46 @@ export async function prepareCanvasDeliveryMedia(
   } catch {
     await dispose();
     signal?.throwIfAborted();
-    throw new CanvasAdapterError('prepare', '图片自动压缩失败，请更换素材后重试，任务未提交。', {
-      code: 'image_compression_failed',
-    });
+    if (cropToAspectRatio) {
+      throw new CanvasAdapterError('prepare', `无法按 ${cropToAspectRatio} 准备关键帧，请检查素材尺寸，任务未提交。`, {
+        code: 'frame_aspect_ratio_failed',
+      });
+    }
+    throw new CanvasAdapterError('prepare', '图片自动压缩失败，请更换素材后重试，任务未提交。', { code: 'image_compression_failed' });
   }
+}
+
+async function prepareMiniMaxH3CanvasImage(request: CanvasDeliveryRequest, maxBytes: number, signal?: AbortSignal): Promise<CanvasDeliveryRequest> {
+  try {
+    let mimeType = request.mimeType;
+    if (mimeType === 'image/webp' || (mimeType === 'image/png' && request.byteSize > maxBytes)) {
+      const { hasAlpha } = await sharp(request.absolutePath).metadata();
+      mimeType = hasAlpha ? 'image/png' : 'image/jpeg';
+    }
+    const imageBuffer = await prepareMiniMaxH3ReferenceImage(request.absolutePath, mimeType, request.byteSize, maxBytes, signal);
+    return {
+      ...request,
+      imageCompression: false,
+      ...(imageBuffer ? { imageBuffer, mimeType, byteSize: imageBuffer.length } : {}),
+    };
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof VideoReferenceMediaError) {
+      throw new CanvasAdapterError('prepare', error.message, { code: error.code });
+    }
+    throw new CanvasAdapterError('prepare', '无法读取 MiniMax H3 参考图，请检查图片格式后重试。', { code: 'reference_preparation_failed' });
+  }
+}
+
+function frameCrop(width: number, height: number, aspectRatio: string) {
+  const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
+  const units = Math.floor(Math.min(width / ratioWidth, height / ratioHeight));
+  const cropWidth = units * ratioWidth;
+  const cropHeight = units * ratioHeight;
+  if (!Number.isFinite(units) || cropWidth <= 0 || cropHeight <= 0) throw new Error('invalid frame aspect ratio');
+  if (cropWidth === width && cropHeight === height) return null;
+  return { left: Math.floor((width - cropWidth) / 2), top: Math.floor((height - cropHeight) / 2),
+    width: cropWidth, height: cropHeight };
 }
 
 /** COS → 本机 URL 的默认交付实现（旧工作台已验证的通道）。 */
@@ -146,7 +179,8 @@ export function createDefaultCanvasDeliverer(): CanvasMediaDeliverer {
     name: 'cos-or-local-url',
     async deliver(request, signal) {
       try {
-        return await deliverVideoReferenceMedia(request, signal);
+        const url = await deliverVideoReferenceMedia(request, signal);
+        return request.preferCosOrigin && request.requireCos ? await preferReadableCosOrigin(url, signal) : url;
       } catch (error) {
         if (error instanceof VideoReferenceMediaError) {
           throw new CanvasAdapterError('prepare', error.message, { code: error.code });

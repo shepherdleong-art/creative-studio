@@ -39,6 +39,10 @@ const CODE_COPY: Record<string, string> = {
 
 export function canvasErrorText(error: unknown): string {
   if (error instanceof CanvasApiError) {
+    const problems = error.details.problems;
+    if (Array.isArray(problems) && problems[0]?.code === 'capability_input_invalid' && error.message) {
+      return error.message;
+    }
     return CODE_COPY[error.code] ?? error.message;
   }
   if (error instanceof Error && error.message) return error.message;

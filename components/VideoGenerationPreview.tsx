@@ -188,71 +188,68 @@ export default function VideoGenerationPreview({ videoUrl, posterUrl, placeholde
         </div>
 
         <div ref={controlsRef} className="stage-controls">
-          {/* Far left: prev */}
-          <button
-            onClick={() => { if (currentIndex > 0) onNavigate(succeededJobs[currentIndex - 1].id); }}
-            disabled={currentIndex <= 0}
-            title="上一个"
-            className="sc-step-btn"
-          >
-            <Icon name="skip-back" size={14} />
-          </button>
-
-          {/* Play + timeline */}
-          <button onClick={handlePlayPause} disabled={!videoUrl} title={displayIsPlaying ? '暂停' : '播放'} className="sc-play-btn">
-            <Icon name={displayIsPlaying ? 'pause' : 'play'} size={14} />
-          </button>
-          <span className="sc-time">{formatTime(displayCurrentTime)}</span>
-          <div className="sc-progress-wrap">
-            <input
-              type="range"
-              className="sc-progress"
-              style={{ '--pct': progressPct } as React.CSSProperties}
-              min={0}
-              max={displayDuration || 1}
-              step={0.01}
-              value={displayCurrentTime}
-              onChange={handleSeek}
-              disabled={!videoUrl}
-            />
-          </div>
-          <span className="sc-time">{formatTime(displayDuration)}</span>
-
-          {/* Right: meta + volume + close */}
-          <div className="sc-right">
-            {currentJobId && succeededJobs.length > 1 && (
-              <span className="sc-shot-label">{`${currentIndex + 1}/${succeededJobs.length}`}</span>
-            )}
-            <button onClick={handleMuteToggle} disabled={!videoUrl} title={displayIsMuted ? '取消静音' : '静音'} className="sc-icon-btn">
-              {displayIsMuted ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                  <path d="M15.54 8.46a5 5 0 010 7.07" />
-                  <path d="M19.07 4.93a10 10 0 010 14.14" />
-                </svg>
-              )}
+          <input
+            type="range"
+            className="sc-progress"
+            aria-label="视频进度"
+            aria-valuetext={`${formatTime(displayCurrentTime)} / ${formatTime(displayDuration)}`}
+            style={{ '--pct': progressPct } as React.CSSProperties}
+            min={0}
+            max={displayDuration || 1}
+            step={0.01}
+            value={displayCurrentTime}
+            onChange={handleSeek}
+            disabled={!videoUrl}
+          />
+          <div className="sc-buttons">
+            <button
+              onClick={() => { if (currentIndex > 0) onNavigate(succeededJobs[currentIndex - 1].id); }}
+              disabled={currentIndex <= 0}
+              title="上一个"
+              className="sc-step-btn"
+            >
+              <Icon name="skip-back" size={14} />
             </button>
-            {videoUrl && (
-              <button onClick={handleClose} title="关闭预览" className="sc-icon-btn">
-                <Icon name="close" size={13} />
-              </button>
-            )}
-          </div>
 
-          {/* Far right: next */}
-          <button
-            onClick={() => { if (currentIndex >= 0 && currentIndex < succeededJobs.length - 1) onNavigate(succeededJobs[currentIndex + 1].id); }}
-            disabled={currentIndex < 0 || currentIndex >= succeededJobs.length - 1}
-            title="下一个"
-            className="sc-step-btn"
-          >
-            <Icon name="skip-forward" size={14} />
-          </button>
+            <button onClick={handlePlayPause} disabled={!videoUrl} title={displayIsPlaying ? '暂停' : '播放'} className="sc-play-btn">
+              <Icon name={displayIsPlaying ? 'pause' : 'play'} size={14} />
+            </button>
+            <span className="sc-time">{formatTime(displayCurrentTime)} / {formatTime(displayDuration)}</span>
+
+            <div className="sc-right">
+              {currentJobId && succeededJobs.length > 1 && (
+                <span className="sc-shot-label">{`${currentIndex + 1}/${succeededJobs.length}`}</span>
+              )}
+              <button onClick={handleMuteToggle} disabled={!videoUrl} title={displayIsMuted ? '取消静音' : '静音'} className="sc-icon-btn">
+                {displayIsMuted ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 010 7.07" />
+                    <path d="M19.07 4.93a10 10 0 010 14.14" />
+                  </svg>
+                )}
+              </button>
+              {videoUrl && (
+                <button onClick={handleClose} title="关闭预览" className="sc-icon-btn">
+                  <Icon name="close" size={13} />
+                </button>
+              )}
+            </div>
+
+            <button
+              onClick={() => { if (currentIndex >= 0 && currentIndex < succeededJobs.length - 1) onNavigate(succeededJobs[currentIndex + 1].id); }}
+              disabled={currentIndex < 0 || currentIndex >= succeededJobs.length - 1}
+              title="下一个"
+              className="sc-step-btn"
+            >
+              <Icon name="skip-forward" size={14} />
+            </button>
+          </div>
         </div>
         </div>
       </div>

@@ -32,7 +32,6 @@ for (const [id, type, model] of [
 const insertAsset = db.prepare(`INSERT INTO video_reference_assets
   (id, projectId, kind, filename, path, mimeType, byteSize, durationSec) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 insertAsset.run('image', 'project', 'image', 'image.png', sourcePath, 'image/png', 100, null);
-insertAsset.run('image-2', 'project', 'image', 'middle.png', sourcePath, 'image/png', 100, null);
 insertAsset.run('video', 'project', 'video', 'video.mp4', sourcePath, 'video/mp4', 100, 4);
 insertAsset.run('audio', 'project', 'audio', 'audio.mp3', sourcePath, 'audio/mpeg', 100, 3);
 insertAsset.run('long-video', 'project', 'video', 'long.mp4', sourcePath, 'video/mp4', 100, 15);
@@ -200,28 +199,44 @@ try {
   assert.equal(oldRow.resolution, null);
   assert.deepEqual(links(oldRow.id), []);
 
-  const multiFrame = { providerId: 'kling4', generationMode: 'frames-to-video', durationSec: 3, resolution: '1080p', referenceAssetIds: ['image-2', 'image'] };
-  const klingReference = { providerId: 'kling4', durationSec: 3, referenceAssetIds: ['video', 'image'] };
-  const kling = await create([item(multiFrame), item(klingReference)], true);
-  assert.ok(kling.ok);
-  const [framesId, referenceId] = kling.videoJobIds;
-  assert.deepEqual(links(framesId), ['image-2', 'image']);
-  assert.deepEqual(links(referenceId), ['video', 'image']);
-  assert.equal(stored().find(row => row.id === framesId)?.generationMode, 'frames-to-video');
-  assert.equal(stored().find(row => row.id === framesId)?.resolution, '1080p');
-  assert.equal(stored().find(row => row.id === referenceId)?.resolution, '720p');
-  for (const invalid of [
-    { ...multiFrame, referenceAssetIds: [] },
-    { ...multiFrame, referenceAssetIds: ['video'] },
-    { ...multiFrame, referenceAssetIds: ['foreign'] },
-    { ...multiFrame, referenceAssetIds: ['image', 'image'] },
-    { ...multiFrame, providerId: 'wan' },
-    { ...multiFrame, resolution: '4K' },
-    { ...klingReference, referenceAssetIds: ['audio'] },
-  ]) {
-    assert.equal((await create([item(multiFrame), item(invalid)], true)).ok, false);
+  const klingFirstFrame = { providerId: 'kling4', generationMode: 'image-to-video', durationSec: 5, referenceAssetIds: [] };
+  db.prepare(`INSERT INTO image_assets (id, projectId, role, usage, filename, path, mimeType)
+    VALUES ('tail-kling4', 'project', 'input', 'video_tail_frame', 'tail.png', ?, 'image/png')`).run(sourcePath);
+  const firstFrame = await create([item(klingFirstFrame)]);
+  const firstAndLast = await create([item({ ...klingFirstFrame, tailImageId: 'tail-kling4', resolution: '1080p' })], true);
+  assert.ok(firstFrame.ok && firstAndLast.ok);
+  assert.equal(stored().find(row => row.id === firstFrame.videoJobIds[0])?.resolution, '1080p');
+  assert.equal(stored().find(row => row.id === firstAndLast.videoJobIds[0])?.resolution, '1080p');
+  assert.equal(db.prepare('SELECT tailImageId FROM video_jobs WHERE id = ?').pluck().get(firstAndLast.videoJobIds[0]), 'tail-kling4');
+  const oversizedSource = path.join(root, 'large-source.png');
+  await sharp({ create: { width: 1600, height: 2400, channels: 3, background: '#2468ac' } })
+    .png({ compressionLevel: 0 }).toFile(oversizedSource);
+  assert.ok(fs.statSync(oversizedSource).size > 10 * 1024 * 1024);
+  db.prepare("UPDATE image_assets SET originalPath = ?, originalWidth = 1600, originalHeight = 2400 WHERE id = 'source'").run(oversizedSource);
+  const autoReference = { ...klingFirstFrame, generationMode: 'reference-to-video' };
+  const sourceReference = await create([item(autoReference), item({ ...autoReference, providerId: 'wan' })], true);
+  assert.ok(sourceReference.ok, sourceReference.ok ? '' : sourceReference.error);
+  const klingReference = stored().find(row => row.id === sourceReference.videoJobIds[0])!;
+  assert.equal(klingReference.resolution, '1080p');
+  assert.equal(klingReference.aspectRatio, '9:16');
+  assert.deepEqual(links(klingReference.id), [], '当前分镜图由 sourceImageId 冻结');
+  const invalidDrafts = [
+    { ...klingFirstFrame, generationMode: 'frames-to-video', referenceAssetIds: ['image'] },
+    { ...autoReference, tailImageId: 'tail-kling4' },
+  ];
+  for (const invalidDraft of invalidDrafts) {
+    const invalid = item(invalidDraft);
+    for (const result of [await create([invalid]), await create([item(klingFirstFrame), invalid], true)]) {
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.match(result.error, /不支持多关键帧|不能携带尾帧图/);
+    }
   }
-  assert.equal(stored().length, 3, '非法批次不得写入部分任务');
+  for (const resolution of ['720p', '4K']) {
+    const result = await create([item({ ...klingFirstFrame, resolution })]);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error, /固定使用 1080p/);
+  }
+  assert.equal(stored().length, 5, '非法批次不得写入部分任务');
 
   console.log('video reference job creation tests passed');
 } finally {

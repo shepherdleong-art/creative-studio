@@ -211,7 +211,7 @@ function recordPageError(label) {
   };
 }
 
-async function runEmployeePages(engineName, employee, project) {
+async function runEmployeePages(engineName, employee, project, oneClickProject) {
   const launcher = engineName === 'webkit' ? webkit : chromium;
   const browser = await launcher.launch({ headless: true });
   const phase = { engine: engineName, assertions: [] };
@@ -235,6 +235,13 @@ async function runEmployeePages(engineName, employee, project) {
         assert.ok(home.sectionTitles.includes(title), `首页必须有「${title}」区块，实际 ${home.sectionTitles.join('/')}`);
       }
       assert.equal(home.projectCount >= 1, true, '「接着做」必须显示刚才建好的项目');
+      const projectCards = page.getByTestId('dashboard-project');
+      const regularCard = projectCards.filter({ hasText: project.name });
+      const oneClickCard = projectCards.filter({ hasText: oneClickProject.name });
+      await regularCard.getByText('常规项目', { exact: true }).waitFor();
+      await regularCard.getByText('第 1 步 场景图', { exact: true }).waitFor();
+      await oneClickCard.getByText('一键成片', { exact: true }).waitFor();
+      assert.doesNotMatch(await oneClickCard.innerText(), /第 \d+ 步/);
       // 非渲染阶段不显示百分比：文档里不得出现「已完成 NN%」（那是渲染专用文案）。
       const pageText = await page.evaluate(() => document.body.innerText);
       assert.doesNotMatch(pageText, /已完成 \d+%/, '没有渲染任务时不得出现百分比进度');
@@ -246,6 +253,14 @@ async function runEmployeePages(engineName, employee, project) {
       assert.equal(usageInputs, 0, '本月用量必须只读');
       await page.screenshot({ path: path.join(evidenceDirectory, `home-${engineName}-${label}.png`) });
       result.evidence.push(`home-${engineName}-${label}.png`);
+
+      await page.goto(`${baseUrl}/projects`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
+      await page.locator(`a[href="/projects/${project.id}"]`).getByText('常规项目', { exact: true }).waitFor();
+      await page.locator(`a[href="/projects/${oneClickProject.id}"]`).getByText('一键成片', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '表格', exact: true }).click();
+      const table = page.getByRole('table');
+      await table.getByRole('row').filter({ hasText: project.name }).getByText('常规项目', { exact: true }).waitFor();
+      await table.getByRole('row').filter({ hasText: oneClickProject.name }).getByText('一键成片', { exact: true }).waitFor();
 
       // ── 新建项目页 ──
       await page.goto(`${baseUrl}/projects/new`, { waitUntil: 'domcontentloaded', timeout: 180_000 });
@@ -370,11 +385,18 @@ async function prepareFixtures() {
       concurrency: 1, timeoutMs: 1000,
     },
   }, 200);
+  const oneClickProject = await jsonRequest(employee, '/api/projects', {
+    method: 'POST', json: {
+      workflowType: 'one_click_film', storeCode: 'B店', productCode: 'UI-FILM',
+      productionType: 'AI种草', editorName: '界面验收员工',
+    },
+  }, 200);
 
   return {
     admin,
     employee: { ...employee, password: 'employee-workbench-password', displayName: '界面验收员工' },
     project: project.body,
+    oneClickProject: oneClickProject.body,
   };
 }
 
@@ -391,7 +413,7 @@ try {
   assert.equal(projectRow.body.timeoutMs, 720_000, `团队版建项目必须用服务器默认超时 720000，实际 ${projectRow.body.timeoutMs}`);
   result.assertions.push('接口：请求里带 concurrency=1/timeoutMs=1000，团队版落库仍是服务器默认 6 / 720000');
 
-  for (const engineName of engines) await runEmployeePages(engineName, fixtures.employee, fixtures.project);
+  for (const engineName of engines) await runEmployeePages(engineName, fixtures.employee, fixtures.project, fixtures.oneClickProject);
 
   assert.deepEqual(result.pageErrors, [], `浏览器不得有未处理异常：${result.pageErrors.slice(0, 3).join(' | ')}`);
   fs.writeFileSync(path.join(evidenceDirectory, 'result.json'), JSON.stringify({

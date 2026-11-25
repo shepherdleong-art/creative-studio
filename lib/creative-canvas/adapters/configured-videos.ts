@@ -6,7 +6,7 @@ import { SEEDANCE_20, SEEDANCE_25, SEEDANCE_FAST } from '../../video-providers/s
 import { directSeedanceCapability } from './seedance-capabilities.ts';
 import { UNIFIED_KLING3_ANCHOR_ID } from '../../media-core/unified-media/catalog.ts';
 import {
-  QINIU_KLING_4_ASPECT_RATIOS, QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_IMAGE_MIME_TYPES,
+  QINIU_KLING_4_CANVAS_ASPECT_RATIOS, QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_IMAGE_MIME_TYPES,
   QINIU_KLING_4_MAX_MIDDLE_FRAMES, QINIU_KLING_4_MODEL, QINIU_KLING_4_PROVIDER_ID,
   QINIU_KLING_4_PROVIDER_NAME, QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS,
 } from '../../company-qiniu-kling-4.ts';
@@ -38,7 +38,8 @@ const kling4: CanvasModelCapability = {
   mediaInputMinimums: [{ modes: ['reference-to-video'], min: 1 }],
   modeLabels: { 'frames-to-video': '多关键帧', 'reference-to-video': '全能参考' },
   modeHints: {
-    'frames-to-video': '按顺序接入 3–10 张图片。第一张为首帧，最后一张为尾帧，中间图片可排序。',
+    'image-to-video': '按顺序接入首帧及可选尾帧。自动跟随首帧，选定比例后居中裁切上传副本。',
+    'frames-to-video': '按顺序接入 3–10 张图片。自动跟随首帧，选定比例后居中裁切上传副本。',
     'reference-to-video': '接入参考图片或视频，可在同一任务中混用。',
   },
   inputs: [
@@ -53,7 +54,8 @@ const kling4: CanvasModelCapability = {
   parameters: [
     { key: 'durationSec', label: '时长（秒）', type: 'enum', options: videoDurationOptions('openai-video', QINIU_KLING_4_MODEL).map(String), default: '5' },
     { key: 'resolution', label: '分辨率', type: 'enum', options: [...QINIU_KLING_4_RESOLUTIONS], default: QINIU_KLING_4_DEFAULT_RESOLUTION },
-    { key: 'aspectRatio', label: '比例', type: 'enum', options: QINIU_KLING_4_ASPECT_RATIOS, default: '16:9', modes: ['reference-to-video'] },
+    { key: 'aspectRatio', label: '比例', type: 'enum', options: QINIU_KLING_4_CANVAS_ASPECT_RATIOS, default: '16:9', modes: ['reference-to-video'] },
+    { key: 'frameAspectRatio', label: '比例', type: 'enum', options: QINIU_KLING_4_CANVAS_ASPECT_RATIOS, default: 'adaptive', modes: ['image-to-video', 'frames-to-video'] },
   ],
   cancellation: false,
   evidence: 'mapped',

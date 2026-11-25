@@ -8,6 +8,7 @@ import { CanvasThumbnail } from '@/components/creative-canvas/CanvasThumbnail';
 import { Icon } from '@/components/ui/Icon';
 import PageToolbar from '@/components/team/PageToolbar';
 import { EmptyState, Segmented, ToolbarButton } from '@/components/ui/Appearance';
+import { Dialog } from '@/components/ui/Dialog';
 import type { WorkspaceRole } from '@/lib/workspace-navigation';
 
 type ViewMode = 'card' | 'table';
@@ -76,6 +77,9 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
   const [name, setName] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState<CanvasSummaryDto | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const viewMode = useSyncExternalStore(subscribeViewMode, readViewMode, readViewModeOnServer);
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('updatedAt');
@@ -110,6 +114,25 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
     }
   }, [name]);
 
+  const closeDeleteDialog = useCallback(() => {
+    if (!deleting) setDeleteTarget(null);
+  }, [deleting]);
+
+  async function deleteCanvas() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await canvasApi.delete(deleteTarget.id);
+      setCanvases((previous) => previous.filter((canvas) => canvas.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : '删除画布失败。');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const normalizedQuery = query.trim().toLowerCase();
   const filteredCanvases = useMemo(() => {
     if (!normalizedQuery) return canvases;
@@ -137,6 +160,22 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
 
   const hasCanvases = canvases.length > 0;
   const noMatches = hasCanvases && filteredCanvases.length === 0;
+
+  const deleteButton = (canvas: CanvasSummaryDto) => (
+    <button
+      type="button"
+      className="icon-btn shrink-0 hover:text-fail"
+      aria-label={`删除画布 ${canvas.name}`}
+      title="删除画布"
+      onClick={(event) => {
+        event.stopPropagation();
+        setDeleteError(null);
+        setDeleteTarget(canvas);
+      }}
+    >
+      <Icon name="trash" size={15} />
+    </button>
+  );
 
   const sortHeader = (key: SortKey, label: string) => (
     <button
@@ -278,6 +317,7 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
                   <th>{sortHeader('nodeCount', '节点')}</th>
                   <th>创建时间</th>
                   <th>{sortHeader('updatedAt', '最近更新')}</th>
+                  <th className="w-12"><span className="sr-only">操作</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -299,6 +339,7 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
                     <td className="tnum text-ink-secondary">{canvas.nodeCount} 个节点</td>
                     <td className="tnum whitespace-nowrap text-[12px] text-ink-secondary">{formatCompactTime(canvas.createdAt)}</td>
                     <td className="tnum whitespace-nowrap text-[12px] text-ink-secondary">{formatCompactTime(canvas.updatedAt)}</td>
+                    <td>{deleteButton(canvas)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -309,31 +350,48 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
           /* 卡片视图与首页项目列表同一版式：色块占位 + 名称 + 一行元信息 */
           <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
             {filteredCanvases.map((canvas) => (
-              <Link
-                key={canvas.id}
-                href={`/canvas/${canvas.id}`}
-                className="group block"
-                data-testid={`canvas-item-${canvas.id}`}
-              >
-                <div className="relative aspect-[4/3] overflow-hidden rounded-[11px] bg-group ring-1 ring-hairline transition-shadow group-hover:shadow-[0_10px_30px_rgb(0_0_0_/_14%)]">
-                  {canvas.preview.nodes.length > 0 ? (
-                    <CanvasThumbnail preview={canvas.preview} />
-                  ) : (
-                    <div className="grid h-full w-full place-items-center text-ink-tertiary">
-                      <Icon name="image" size={28} />
-                    </div>
-                  )}
+              <article key={canvas.id} className="min-w-0">
+                <Link href={`/canvas/${canvas.id}`} className="group block" data-testid={`canvas-item-${canvas.id}`}>
+                  <div className="relative aspect-[4/3] overflow-hidden rounded-[11px] bg-group ring-1 ring-hairline transition-shadow group-hover:shadow-[0_10px_30px_rgb(0_0_0_/_14%)]">
+                    {canvas.preview.nodes.length > 0 ? (
+                      <CanvasThumbnail preview={canvas.preview} />
+                    ) : (
+                      <div className="grid h-full w-full place-items-center text-ink-tertiary">
+                        <Icon name="image" size={28} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-2 truncate text-[13px] font-medium text-ink" title={canvas.name}>{canvas.name}</div>
+                </Link>
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-label text-ink-tertiary">
+                    <span>{canvas.nodeCount} 个节点</span>
+                    <span className="tnum">{formatDateOnly(canvas.updatedAt)}</span>
+                  </div>
+                  {deleteButton(canvas)}
                 </div>
-                <div className="mt-2 truncate text-[13px] font-medium text-ink" title={canvas.name}>{canvas.name}</div>
-                <div className="mt-0.5 flex items-baseline justify-between gap-2 text-[12px] text-ink-tertiary">
-                  <span className="truncate">{canvas.nodeCount} 个节点</span>
-                  <span className="tnum shrink-0">{formatDateOnly(canvas.updatedAt)}</span>
-                </div>
-              </Link>
+              </article>
             ))}
           </div>
         )}
       </section>
+      <Dialog
+        open={deleteTarget !== null}
+        title="删除画布"
+        description={role ? '删除后可在团队回收站恢复。' : '删除后无法恢复。'}
+        onClose={closeDeleteDialog}
+        footer={(
+          <>
+            <ToolbarButton onClick={closeDeleteDialog} disabled={deleting}>取消</ToolbarButton>
+            <button type="button" className="btn-danger" disabled={deleting} onClick={() => { void deleteCanvas(); }}>
+              {deleting ? '删除中…' : '确认删除'}
+            </button>
+          </>
+        )}
+      >
+        <p className="break-words">确认删除「{deleteTarget?.name}」？</p>
+        {deleteError ? <p className="mt-2 text-fail" role="alert">{deleteError}</p> : null}
+      </Dialog>
     </div>
   );
 }

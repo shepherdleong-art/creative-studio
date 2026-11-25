@@ -13,6 +13,9 @@ register('./typescript-extension-loader.mjs', import.meta.url);
 const { registerCanvasCapability } = await import('../lib/creative-canvas/capabilities.ts');
 const { COMPANY_CANVAS_NATIVE_VIDEO_CAPABILITIES } = await import('../lib/creative-canvas/adapters/company-capabilities.ts');
 const { configuredCanvasVideos } = await import('../lib/creative-canvas/adapters/configured-videos.ts');
+const { configuredCanvasImages } = await import('../lib/creative-canvas/adapters/configured-images.ts');
+const { QINIU_IMAGE_26_MODELS } = await import('../lib/company-qiniu-image-models.ts');
+const { _setCompanyTailFrameRuntimeInspectorForTest } = await import('../lib/company-gateway-tail-frame.ts');
 const { createCompanyCanvasAdapter } = await import('../lib/creative-canvas/adapters/company.ts');
 const { createDefaultCanvasDeliverer } = await import('../lib/creative-canvas/adapters/media-delivery.ts');
 const { CanvasAdapterError } = await import('../lib/creative-canvas/adapters/types.ts');
@@ -23,8 +26,19 @@ const originalFetch = globalThis.fetch;
 const uploads: Array<{ bytes: Buffer; mime: string }> = [];
 let posts = 0;
 let cosUnavailable = false;
+const originHost = 'fixture-12345.cos.ap-guangzhou.myqcloud.com';
+let originStatus = 206;
+let originReads = 0;
 globalThis.fetch = async (input, init) => {
   const url = new URL(String(input));
+  if (url.hostname === originHost) {
+    originReads++;
+    assert.equal(init?.method ?? 'GET', 'GET');
+    assert.equal(new Headers(init?.headers).get('range'), 'bytes=0-0');
+    assert.equal(init?.redirect, 'error');
+    assert.ok(url.searchParams.has('q-signature'));
+    return new Response(new Uint8Array([0xff]), { status: originStatus });
+  }
   assert.equal(url.hostname, 'canvas-cos.test', 'No real network requests');
   if (cosUnavailable) return new Response('', { status: 503 });
   if (init?.method === 'PUT') {
@@ -82,7 +96,40 @@ try {
   const smallPath = path.join(root, 'small-alpha.png');
   fs.writeFileSync(smallPath, small);
 
+  db.exec('CREATE TABLE providers (id TEXT, name TEXT, type TEXT, baseUrl TEXT, apiKey TEXT, enabled INTEGER, model TEXT)');
+  for (const spec of QINIU_IMAGE_26_MODELS) {
+    db.prepare('INSERT INTO providers VALUES (?, ?, ?, ?, ?, 1, ?)').run(
+      spec.id, spec.name, 'gateway-task-image', 'http://127.0.0.1:4300', 'fixture-key', spec.model,
+    );
+  }
+  const images = configuredCanvasImages(db);
+  for (const image of images) registerCanvasCapability(image);
+  process.env.CREATIVE_STUDIO_COS_SIGN_HOST = originHost;
+  const submitted: URL[] = [];
+  const imageAdapter = createCompanyCanvasAdapter({ db, deliverer: createDefaultCanvasDeliverer(),
+    fetchImpl: async (_url, init) => {
+      submitted.push(new URL(JSON.parse(String(init?.body)).images[0]));
+      return Response.json({ id: 'fixture-image' });
+    },
+  });
+  for (const [alias, status] of [['sunburst', 206], ['flare', 206], ['sunburst', 403]] as const) {
+    originStatus = status;
+    const image = images.find(entry => entry.modelAlias === 'qiniuyun/gpt-image-2.6-' + alias)!;
+    const request = context(image, smallPath, small, 'image/png');
+    Object.assign(request, { mediaKind: 'image', generationMode: 'image-to-image', parameters: { aspectRatio: '16:9', resolution: '4K' } });
+    await imageAdapter.prepare(request);
+    await imageAdapter.submit(request);
+  }
+  assert.deepEqual(submitted.map(url => url.hostname), [originHost, 'canvas-cos.test', 'canvas-cos.test']);
+  assert.equal(originReads, 2, '仅 Sunburst 探测源站，每次生成最多一次 POST');
+  assert.equal(submitted[0].pathname + submitted[0].search, submitted[1].pathname + submitted[1].search,
+    '缓存命中时只换下载域名，保留原对象和签名');
+  delete process.env.CREATIVE_STUDIO_COS_SIGN_HOST;
+
   const kling4Model = 'qiniuyun/kling-4.0';
+  _setCompanyTailFrameRuntimeInspectorForTest(async () => ({
+    status: 'ready', reason: '', proxyAvailable: true, cosConfigured: true, startedAt: null,
+  }));
   db.prepare('INSERT INTO video_providers VALUES (?, ?, ?, ?, ?, 1, ?)').run(
     'company-qiniuyun-kling-4-0', kling4Model, 'openai-video', 'http://127.0.0.1:4000', 'test-key', kling4Model,
   );
@@ -90,10 +137,15 @@ try {
   assert.ok(kling4);
   registerCanvasCapability(kling4);
   let kling4Body: Record<string, unknown> = {};
+  const deliveredKling4Frames: Array<[number, number]> = [];
   const kling4Adapter = createCompanyCanvasAdapter({
     db,
     deliverer: { name: 'fixture-cos', async deliver(request) {
       assert.equal(request.requireCos, true);
+      if (request.isFrameImage) {
+        const { width, height } = await sharp(request.absolutePath).metadata();
+        deliveredKling4Frames.push([width, height]);
+      }
       const name = path.basename(request.absolutePath);
       return 'https://canvas-cos.test/' + name;
     } },
@@ -104,13 +156,14 @@ try {
     },
   });
   const fixtureBytes = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#aa7755' } }).png().toBuffer();
-  const frames = context(kling4, smallPath, fixtureBytes, 'image/png');
+  const portraitFrameBytes = await sharp({ create: { width: 720, height: 1080, channels: 3, background: '#aa7755' } }).png().toBuffer();
+  const frames = context(kling4, smallPath, portraitFrameBytes, 'image/png');
   frames.generationMode = 'frames-to-video';
   frames.parameters = { durationSec: 3, resolution: '1080p' };
   const roles = ['first-frame', 'middle-frame', 'middle-frame', 'last-frame'] as const;
   frames.inputs = roles.map((role, orderIndex) => {
     const file = path.join(root, 'frame-' + orderIndex + '.png');
-    fs.writeFileSync(file, fixtureBytes);
+    fs.writeFileSync(file, portraitFrameBytes);
     return { ...frames.inputs[0], absolutePath: file, refId: 'frame-' + orderIndex, role, orderIndex };
   });
   await kling4Adapter.prepare(frames);
@@ -119,7 +172,36 @@ try {
   assert.deepEqual(kling4Body.images, ['https://canvas-cos.test/frame-0.png']);
   assert.equal(kling4Body.end_image_url, 'https://canvas-cos.test/frame-3.png');
   assert.equal(kling4Body.resolution, '1080p');
-  assert.equal(kling4Body.size, '1920x1080');
+  assert.equal(kling4Body.size, undefined);
+  assert.equal(kling4Body.aspect_ratio, undefined);
+  assert.deepEqual(deliveredKling4Frames, roles.map(() => [720, 1080]));
+
+  frames.parameters.frameAspectRatio = '3:4';
+  deliveredKling4Frames.length = 0;
+  await kling4Adapter.prepare(frames);
+  await kling4Adapter.submit(frames);
+  assert.deepEqual(deliveredKling4Frames, roles.map(() => [720, 960]));
+  assert.equal(kling4Body.size, undefined);
+  assert.equal(kling4Body.aspect_ratio, undefined);
+  assert.notEqual(kling4Body.start_image_url, 'https://canvas-cos.test/frame-0.png');
+  assert.deepEqual(fs.readFileSync(frames.inputs[0].absolutePath!), portraitFrameBytes);
+  assert.deepEqual(uploadCopies(), []);
+
+  const firstFrame = { ...frames, generationMode: 'image-to-video' as const, inputs: [frames.inputs[0]] };
+  deliveredKling4Frames.length = 0;
+  await kling4Adapter.prepare(firstFrame);
+  await kling4Adapter.submit(firstFrame);
+  assert.deepEqual(deliveredKling4Frames, [[720, 960]]);
+  assert.equal(kling4Body.aspect_ratio, undefined);
+
+  const rotatedFramePath = path.join(root, 'rotated-frame.jpg');
+  const rotatedFrameBytes = await sharp(fixtureBytes).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+  fs.writeFileSync(rotatedFramePath, rotatedFrameBytes);
+  deliveredKling4Frames.length = 0;
+  await kling4Adapter.prepare({ ...firstFrame, inputs: [{
+    ...firstFrame.inputs[0], absolutePath: rotatedFramePath, mimeType: 'image/jpeg', byteSize: rotatedFrameBytes.length,
+  }] });
+  assert.deepEqual(deliveredKling4Frames, [[720, 960]], '裁切使用 EXIF 校正后的宽高');
 
   const reference = context(kling4, smallPath, fixtureBytes, 'image/png');
   reference.parameters = { durationSec: 3, resolution: '720p', aspectRatio: '16:9' };
@@ -137,6 +219,13 @@ try {
   assert.deepEqual(kling4Body.video_urls, ['https://canvas-cos.test/reference.mp4']);
   assert.equal(kling4Body.images, undefined);
   assert.equal(kling4Body.aspect_ratio, '16:9');
+  for (const ratio of ['3:4', '4:3', '21:9', 'adaptive']) {
+    reference.parameters.aspectRatio = ratio;
+    await kling4Adapter.prepare(reference);
+    await kling4Adapter.submit(reference);
+    assert.equal(kling4Body.aspect_ratio, ratio);
+    assert.deepEqual(kling4Body.image_urls, ['https://canvas-cos.test/frame-0.png']);
+  }
   await assert.rejects(kling4Adapter.prepare({ ...reference, inputs: [] }), /至少/);
 
   const referenceImage = fixtures[0];
@@ -230,6 +319,22 @@ try {
       assert.deepEqual(uploads[0].bytes, small, 'Compliant source should upload unchanged');
     }
 
+    if (capability.modelAlias === 'minimax-h3') {
+      const tall = await sharp({ create: { width: 4342, height: 6513, channels: 3, background: '#a48763' } }).jpeg().toBuffer();
+      const file = path.join(root, 'tall-below-byte-limit.jpg');
+      fs.writeFileSync(file, tall);
+      assert.ok(tall.length < 10 * 1024 * 1024);
+      const request = context(capability, file, tall, 'image/jpeg');
+      uploads.length = 0;
+      await adapter.prepare(request);
+      assert.equal(uploads.length, 1);
+      const dimensions = await sharp(uploads[0].bytes).metadata();
+      assert.deepEqual([dimensions.width, dimensions.height], [3840, 5760]);
+      assert.deepEqual(fs.readFileSync(file), tall);
+      assert.equal(request.inputs[0].absolutePath, file);
+      assert.equal(request.inputs[0].byteSize, tall.length);
+    }
+
     const beforePosts = posts;
     const beforeUploads = uploads.length;
     const invalid = context(capability, smallPath, small, 'image/webp');
@@ -251,7 +356,8 @@ try {
     const corrupt = Buffer.alloc(10 * 1024 * 1024 + 1);
     fs.writeFileSync(badFile, corrupt);
     await assert.rejects(adapter.prepare(context(capability, badFile, corrupt, 'image/png')),
-      (error: unknown) => error instanceof CanvasAdapterError && error.code === 'image_compression_failed');
+      (error: unknown) => error instanceof CanvasAdapterError
+        && error.code === (capability.modelAlias === 'minimax-h3' ? 'reference_preparation_failed' : 'image_compression_failed'));
     assert.equal(posts, beforePosts);
     assert.equal(uploads.length, beforeUploads);
 
@@ -270,6 +376,7 @@ try {
     console.log(capability.modelAlias + ': oversized PNG/JPEG/alpha, compliant image, invalid media, cancellation and cleanup passed');
   }
 } finally {
+  _setCompanyTailFrameRuntimeInspectorForTest(null);
   globalThis.fetch = originalFetch;
   db.close();
   fs.rmSync(root, { recursive: true, force: true });

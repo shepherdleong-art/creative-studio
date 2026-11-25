@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
+import { WORKSPACE_PROJECT_CREATE_ENTRIES } from '@/lib/workspace-navigation';
 
 interface Project {
   id: string;
   name: string;
+  workflowType?: string;
   createdAt: string;
   lastOpenedAt?: string | null;
   providerId: string;
@@ -114,6 +117,11 @@ function formatCompactTime(value: string): string {
 
 function projectCostYuan(p: Project): number {
   return (p.totalUsageCostMicros || 0) / 1_000_000;
+}
+
+function ProjectTypeTag({ workflowType }: Pick<Project, 'workflowType'>) {
+  const entry = workflowType === 'one_click_film' ? 'one_click_film' : 'complex_product';
+  return <Tag>{WORKSPACE_PROJECT_CREATE_ENTRIES[entry].name}</Tag>;
 }
 
 export default function ProjectsHome({ team = false, canManageProviders = true }: { team?: boolean; canManageProviders?: boolean }) {
@@ -397,14 +405,17 @@ export default function ProjectsHome({ team = false, canManageProviders = true }
                               <Icon name="image" size={14} />
                             )}
                           </div>
-                          <Link
-                            href={`/projects/${p.id}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className="truncate font-medium text-ink hover:underline"
-                            title={p.name}
-                          >
-                            {p.name}
-                          </Link>
+                          <div className="flex min-w-0 flex-col items-start gap-1">
+                            <Link
+                              href={`/projects/${p.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="max-w-full truncate font-medium text-ink hover:underline"
+                              title={p.name}
+                            >
+                              {p.name}
+                            </Link>
+                            <ProjectTypeTag workflowType={p.workflowType} />
+                          </div>
                         </div>
                       </td>
                       <td className="px-4 py-2.5">
@@ -469,9 +480,12 @@ export default function ProjectsHome({ team = false, canManageProviders = true }
                           <Icon name="image" size={28} />
                         </div>
                       )}
-                      <span className={`status-badge absolute left-2 top-2 shadow-sm ${STATUS_CLASS[p.status] ?? 'status-pending'}`}>
-                        {STATUS_LABELS[p.status] ?? p.status}
-                      </span>
+                      <div className="absolute left-2 right-10 top-2 flex flex-wrap items-center gap-1.5">
+                        <span className={`status-badge shadow-sm ${STATUS_CLASS[p.status] ?? 'status-pending'}`}>
+                          {STATUS_LABELS[p.status] ?? p.status}
+                        </span>
+                        <ProjectTypeTag workflowType={p.workflowType} />
+                      </div>
                       {p.totalJobs > 0 && (
                         <div className="absolute inset-x-0 bottom-0 h-1 bg-black/20">
                           <div

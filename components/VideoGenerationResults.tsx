@@ -1,7 +1,9 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Dialog } from '@/components/ui/Dialog';
 import { Icon } from '@/components/ui/Icon';
 
 interface VideoJob {
@@ -60,6 +62,12 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
   const [rejectingJobId, setRejectingJobId] = useState<string | null>(null);
   const [rejectReasonDraft, setRejectReasonDraft] = useState('');
   const [rejectSubmittingJobId, setRejectSubmittingJobId] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const errorTrigger = useRef<HTMLButtonElement>(null);
+  const closeErrorDetail = useCallback(() => {
+    setErrorDetail(null);
+    errorTrigger.current?.focus();
+  }, []);
   const rejectedJobs = videoJobs.filter((job) => Boolean(job.rejectedAt));
   const visibleJobs = showRejected ? videoJobs : videoJobs.filter((job) => !job.rejectedAt);
   if (videoJobs.length === 0) {
@@ -122,6 +130,22 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
         const isRunning = job.status === 'pending' || job.status === 'running';
         const isNeedsCheck = job.status === 'needs_check';
         const lateResult = job.status === 'canceled' && hasResult;
+        const errorMessage = job.errorMessage;
+        const errorButton = errorMessage ? (
+          <button
+            type="button"
+            className="status-badge result-status status-failed cursor-pointer underline underline-offset-2"
+            aria-label="查看报错详情"
+            aria-haspopup="dialog"
+            onClick={(event) => {
+              event.stopPropagation();
+              errorTrigger.current = event.currentTarget;
+              setErrorDetail(errorMessage);
+            }}
+          >
+            报错
+          </button>
+        ) : null;
 
         return (
           <div
@@ -172,13 +196,15 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                 </div>
               )}
               <div className="result-meta-row">
-                <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
-                  {lateResult
-                    ? '已停止 · 结果已保留'
-                    : job.status === 'needs_check' && job.providerStatus === 'download_failed'
-                    ? '下载失败'
-                    : STATUS_LABELS[job.status] || job.status}
-                </span>
+                {(isFailed && errorButton) || (
+                  <span className={`status-badge result-status status-${isSucceeded ? 'succeeded' : isFailed ? 'failed' : isRunning ? 'running' : 'pending'}`}>
+                    {lateResult
+                      ? '已停止 · 结果已保留'
+                      : job.status === 'needs_check' && job.providerStatus === 'download_failed'
+                      ? '下载失败'
+                      : STATUS_LABELS[job.status] || job.status}
+                  </span>
+                )}
                 {job.tailImageId && (
                   <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[9px] font-medium text-ink-secondary">
                     首尾帧
@@ -259,6 +285,7 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                     重试
                   </button>
                 )}
+                {!isFailed && errorButton}
               </div>
 
               {isSucceeded && !isRejected && rejectingJobId === job.id && (
@@ -303,11 +330,6 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
                 </div>
               ) : null}
 
-              {job.errorMessage && (
-                <div className="mt-1 break-words text-fail" style={{ fontSize: '0.6rem' }}>
-                  {job.errorMessage}
-                </div>
-              )}
               {isRejected && job.rejectReason && (
                 <div className="mt-1 break-words text-ink-tertiary" style={{ fontSize: '0.6rem' }}>
                   剔除原因：{job.rejectReason}
@@ -317,6 +339,12 @@ export default function VideoGenerationResults({ videoJobs, onPreview, onSelect,
           </div>
         );
       })}
+      {errorDetail && createPortal(
+        <Dialog open title="视频任务报错详情" onClose={closeErrorDetail}>
+          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-ink">{errorDetail}</p>
+        </Dialog>,
+        document.body,
+      )}
     </div>
   );
 }

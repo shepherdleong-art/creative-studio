@@ -648,12 +648,47 @@ try {
   assert.equal(kling4Body.seconds, '3');
   assert.equal(kling4Body.duration, 3);
   assert.equal(kling4Body.resolution, '720p');
-  assert.equal(kling4Body.size, '960x720');
+  assert.equal(kling4Body.size, undefined);
   assert.deepEqual(kling4Body.images, [kling4Body.start_image_url]);
   assert.match(String(kling4Body.start_image_url), /^https:\/\/cos\.example\.com\//);
   assert.match(String(kling4Body.end_image_url), /^https:\/\/cos\.example\.com\//);
   assert.notEqual(kling4Body.start_image_url, kling4Body.end_image_url);
   assert.equal(kling4Body.multi_shot, undefined);
+
+  const largeFramePath = path.join(storageDir, 'large-transparent.png');
+  // The live failed request had a 2:3 source and the gateway rejected its inferred 3:4 output.
+  await sharp({ create: { width: 1600, height: 2400, channels: 4, background: '#33669980' } })
+    .png({ compressionLevel: 0 }).toFile(largeFramePath);
+  assert.ok(fs.statSync(largeFramePath).size > 10 * 1024 * 1024);
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith('/v1/videos') && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      const frames = [body.start_image_url, body.end_image_url].filter(Boolean);
+      if (body.size === '1080x1440') {
+        return Response.json({ code: 'invalid_kling_v4_request',
+          message: 'Kling v4 does not support aspect_ratio "3:4" for this operation' }, { status: 400 });
+      }
+      if (frames.some(url => !/\.(png|jpg)$/.test(new URL(url).pathname))) {
+        return Response.json({ error: { message: '仅支持 PNG 或 JPEG 首尾帧' } }, { status: 400 });
+      }
+    }
+    return mockFetch(input, init);
+  };
+  try {
+    for (const withTail of [false, true]) {
+      const result = await openaiVideoAdapter.submit({
+        model: 'qiniuyun/kling-4.0', prompt: '自然生长', durationSec: 5, resolution: '1080p',
+        sourceImagePath: largeFramePath, sourceMimeType: 'image/png',
+        ...(withTail ? { tailImagePath: tailImagePath, tailMimeType: 'image/png' } : {}),
+      }, 'gateway-key', 'http://127.0.0.1:4000');
+      assert.equal(result.providerTaskId, 'video_xxx');
+      assert.equal((capturedBody as Record<string, unknown>).resolution, '1080p');
+      assert.equal((capturedBody as Record<string, unknown>).size, undefined);
+      assert.equal((capturedBody as Record<string, unknown>).aspect_ratio, undefined);
+    }
+  } finally {
+    globalThis.fetch = mockFetch;
+  }
 
   const middleFrame = { id: 'middle', kind: 'image', path: tailImagePath, mimeType: 'image/png', byteSize: 256 } as const;
   await openaiVideoAdapter.submit({
@@ -663,7 +698,8 @@ try {
   }, 'gateway-key', 'http://127.0.0.1:4000');
   const framesBody = capturedBody as Record<string, unknown>;
   assert.equal(framesBody.resolution, '1080p');
-  assert.equal(framesBody.size, '1440x1080');
+  assert.equal(framesBody.size, undefined);
+  assert.equal(framesBody.aspect_ratio, undefined);
   assert.deepEqual(framesBody.middle_image_urls, [framesBody.end_image_url], '中间帧走独立字段');
   assert.deepEqual(framesBody.images, [framesBody.start_image_url]);
   const imageUrl = String(framesBody.start_image_url);

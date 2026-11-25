@@ -72,6 +72,7 @@ export interface CanvasNodeCandidateDto {
   assetId: string;
   variantIndex: number;
   createdAt: string;
+  completedAt?: string;
 }
 
 export interface CanvasAssetDto {
@@ -191,6 +192,9 @@ export const canvasApi = {
     body: JSON.stringify({ name }),
   }),
   get: (canvasId: string) => request<{ canvas: CanvasDto }>(`/api/canvas/${canvasId}`),
+  delete: (canvasId: string) => request<{ success: true }>(`/api/canvas/${encodeURIComponent(canvasId)}`, {
+    method: 'DELETE',
+  }),
   saveGraph: (
     canvasId: string,
     body: { expectedGraphRevision: number; graph: CanvasGraph; viewport?: CanvasViewport },

@@ -15,6 +15,7 @@ const { registerCanvasCapability } = await import('../lib/creative-canvas/capabi
 const { createCanvas, requireCanvas, saveCanvasGraph, listCanvasNodeCandidates, publishCanvasNodeResult } = await import('../lib/creative-canvas/repository.ts');
 const { startCanvasRun } = await import('../lib/creative-canvas/runs.ts');
 const { getCanvasTask } = await import('../lib/creative-canvas/tasks.ts');
+const { canvasVideoResultInfo } = await import('../lib/creative-canvas/video-metadata.ts');
 const { SEEDANCE_25 } = await import('../lib/video-providers/seedance-contract.ts');
 const db = new Database(':memory:');
 try {
@@ -59,10 +60,21 @@ try {
   assert.throws(() => startCanvasRun({ db, request: { ...request, requestKey: 'wrong-asset', draftAssetId: 'different' } }), /样片/);
 
   asset('formal');
-  db.prepare("UPDATE creative_canvas_tasks SET phase = 'succeeded', outputAssetId = 'formal' WHERE id = ?").run(started.tasks[0].id);
+  const completedAt = new Date(Date.parse(started.tasks[0].createdAt) + 230_000).toISOString();
+  db.prepare("UPDATE creative_canvas_tasks SET phase = 'succeeded', outputAssetId = 'formal', updatedAt = ? WHERE id = ?").run(completedAt, started.tasks[0].id);
   const task = getCanvasTask(db, started.tasks[0].id)!;
   assert.equal(publishCanvasNodeResult({ db, canvasId: canvas.id, nodeId: 'sample', taskId: task.id, nodeEpoch: task.nodeEpoch, assetId: 'formal' }).published, true);
-  assert.equal(listCanvasNodeCandidates(db, canvas.id).find(c => c.assetId === 'formal')?.materialized, false);
+  const candidate = listCanvasNodeCandidates(db, canvas.id).find(c => c.assetId === 'formal');
+  assert.equal(candidate?.materialized, false);
+  assert.equal(candidate.completedAt, completedAt);
+  assert.equal(candidate.createdAt, started.tasks[0].createdAt);
+  assert.deepEqual(canvasVideoResultInfo(db, canvas.id, 'formal'), {
+    model: SEEDANCE_25, modelName: capability.displayName, completedAt,
+  });
+  assert.equal(canvasVideoResultInfo(db, canvas.id, 'draft')?.completedAt, at);
+  assert.equal(canvasVideoResultInfo(db, 'different-canvas', 'formal'), null);
+  asset('imported');
+  assert.equal(canvasVideoResultInfo(db, canvas.id, 'imported'), null);
   const finalNode = { ...sample, id: 'formal-result', position: { x: 350, y: 0 }, data: { ...sample.data, title: '正式版', assetId: 'formal' } };
   const graph = { schemaVersion: 1, nodes: [sample, finalNode], edges: [{ id: 'lineage', source: 'sample', target: 'formal-result', sourceHandle: 'draft-final' }] };
   const presented = saveCanvasGraph({ db, canvasId: canvas.id, expectedGraphRevision: saved.graphRevision, graph });

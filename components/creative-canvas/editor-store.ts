@@ -46,7 +46,7 @@ import {
   type CanvasPlanDto,
   type CanvasTaskDto,
 } from './api';
-import { useCanvasToasts } from './canvas-toasts';
+import { useCanvasToasts, type CanvasResultNotice } from './canvas-toasts';
 import { canvasErrorText } from './error-copy';
 import { CanvasRuntimeStore } from './runtime-store';
 import { useCanvasClipboard } from './editor/clipboard';
@@ -241,11 +241,17 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const materializeResults = useCallback((candidates: Array<CanvasNodeCandidateDto & { isTailFrame?: boolean }>) => {
     const nextNodes = [...nodesRef.current];
     const nextEdges = [...edgesRef.current];
+    const newResults: CanvasResultNotice[] = [];
     for (const candidate of candidates) {
       const source = nextNodes.find((node) => node.id === candidate.nodeId);
       if (!source) continue; // 源节点在任务完成前已被删除
       const id = `n-${crypto.randomUUID()}`;
       const sourceTitle = String(source.data.title ?? '').trim();
+      const mediaKind = !candidate.isTailFrame && (source.type === 'video-generation' || source.data.mediaKind === 'video') ? 'video' : 'image';
+      const title = candidate.isTailFrame ? (sourceTitle ? `${sourceTitle} · 尾帧` : '返回尾帧') : source.type === 'material' ? `${sourceTitle || '视频'} · 正式版` : sourceTitle ? `${sourceTitle} · 结果` : '生成结果';
+      if (!candidate.isTailFrame) {
+        newResults.push({ ...candidate, mediaKind, title: source.type === 'material' ? title : sourceTitle || title });
+      }
       const desired = {
         x: source.position.x + (source.measured?.width ?? source.width ?? (Number(source.style?.width) || 300)) + 80,
         y: source.position.y,
@@ -256,9 +262,9 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         style: { width: nodeKindSpec('material').defaultWidth },
         position: findOpenPosition(desired, nextNodes, 'material'),
         data: {
-          title: candidate.isTailFrame ? (sourceTitle ? `${sourceTitle} · 尾帧` : '返回尾帧') : source.type === 'material' ? `${sourceTitle || '视频'} · 正式版` : sourceTitle ? `${sourceTitle} · 结果` : '生成结果',
+          title,
           assetId: candidate.assetId,
-          mediaKind: candidate.isTailFrame ? 'image' : source.type === 'video-generation' || source.data.mediaKind === 'video' ? 'video' : 'image',
+          mediaKind,
         },
       });
       nextEdges.push({
@@ -270,8 +276,10 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         markerEnd: CANVAS_EDGE_MARKER_END,
       });
     }
+    if (nextNodes.length === nodesRef.current.length) return;
     commit(nextNodes, nextEdges);
-  }, [commit]);
+    if (newResults.length > 0) toasts.notifyResults(newResults);
+  }, [commit, toasts]);
 
   const updateRuntimeFromCanvas = useCallback((canvas: CanvasDto) => {
     runtime.update(canvas.nodeStates, canvas.tasks ?? [], canvas.nodeCandidates ?? []);

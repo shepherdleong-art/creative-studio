@@ -25,6 +25,11 @@ const server = http.createServer(async (req, res) => {
     body = Object.fromEntries(form.entries());
   }
   captured.push(body);
+  if (body.model === 'qiniuyun/kling-4.0' && body.size === '1080x1440') {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ code: 'invalid_kling_v4_request', message: 'Kling v4 does not support aspect_ratio "3:4" for this operation' }));
+    return;
+  }
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ id: 'fake-video', object: 'video', status: 'queued', created_at: 1, model: body.model }));
 });
@@ -35,7 +40,7 @@ const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const config = path.join(temp, 'config.yaml');
 fs.writeFileSync(config, `model_list:
-${['qiniuyun/kling-3.0', 'minimax-h3', 'wan-3.0'].map(model => `  - model_name: ${model}
+${['qiniuyun/kling-3.0', 'qiniuyun/kling-4.0', 'minimax-h3', 'wan-3.0'].map(model => `  - model_name: ${model}
     litellm_params:
       model: openai/${model}
       api_base: http://127.0.0.1:${server.address().port}/v1
@@ -106,7 +111,39 @@ try {
       for (const field of ['images', 'multi_shot', 'shot_type', 'size']) assert.equal(forwarded[field], undefined);
     }
   }
-  assert.equal(captured.length, 6);
+  for (const [width, tail] of [[800, false], [900, true]]) {
+    const portraitPath = path.join(temp, `portrait-${width}.png`);
+    await sharp({ create: { width, height: 1200, channels: 3, background: '#336699' } }).png().toFile(portraitPath);
+    const result = await openaiVideoAdapter.submit({
+      model: 'qiniuyun/kling-4.0', prompt: 'portrait forwarding fixture',
+      sourceImagePath: portraitPath, sourceMimeType: 'image/png', durationSec: 5, resolution: '1080p',
+      ...(tail ? { tailImagePath: portraitPath, tailMimeType: 'image/png' } : {}),
+    }, 'local-fake-key', `http://127.0.0.1:${port}`);
+    assert.ok(result.providerTaskId);
+    const forwarded = captured.at(-1);
+    assert.equal(forwarded.model, 'qiniuyun/kling-4.0');
+    assert.equal(forwarded.resolution, '1080p');
+    assert.equal(Number(forwarded.duration), 5);
+    assert.equal(forwarded.size, undefined);
+    assert.equal(forwarded.aspect_ratio, undefined);
+    assert.ok(forwarded.start_image_url.startsWith('https://cos-fixture.example.com/'));
+    assert.equal(Boolean(forwarded.end_image_url), tail);
+  }
+  const referenceUrl = 'https://cos-fixture.example.com/reference.png';
+  const reference = await openaiVideoAdapter.submitReference({
+    model: 'qiniuyun/kling-4.0', prompt: 'single reference forwarding fixture', durationSec: 5,
+    aspectRatio: '9:16', resolution: '1080p', references: [{ kind: 'image', mimeType: 'image/png', url: referenceUrl }],
+  }, 'local-fake-key', `http://127.0.0.1:${port}`);
+  assert.ok(reference.providerTaskId);
+  const forwardedReference = captured.at(-1);
+  const imageUrls = typeof forwardedReference.image_urls === 'string'
+    ? JSON.parse(forwardedReference.image_urls) : forwardedReference.image_urls;
+  assert.deepEqual(imageUrls, [referenceUrl]);
+  assert.equal(forwardedReference.aspect_ratio, '9:16');
+  assert.equal(forwardedReference.resolution, '1080p');
+  assert.equal(forwardedReference.start_image_url, undefined);
+  assert.equal(forwardedReference.end_image_url, undefined);
+  assert.equal(captured.length, 9);
   console.log('litellm video forwarding tests passed');
 } finally {
   globalThis.fetch = originalFetch;

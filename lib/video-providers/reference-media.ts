@@ -8,6 +8,7 @@ import {
   tryUploadToCosAndSign,
 } from '../cos-media.ts';
 import { isPrivateOrLocalHttpUrl, resolvePublicImageUrlWithSource } from '../local-image-url.ts';
+import { encodeImageWithinByteBudget } from '../media-core/image-byte-budget.ts';
 import { SEEDANCE_25 } from './seedance-contract.ts';
 
 export type VideoReferenceMediaKind = 'image' | 'video' | 'audio';
@@ -140,6 +141,48 @@ export class VideoReferenceMediaError extends Error {
     super(message);
     this.name = 'VideoReferenceMediaError';
     this.code = code;
+  }
+}
+
+/** MiniMax H3 checks pixel dimensions independently of the image's file size. */
+export async function prepareMiniMaxH3ReferenceImage(
+  file: string,
+  mimeType: string,
+  byteSize: number,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<Buffer<ArrayBuffer> | undefined> {
+  const minSide = 256;
+  const maxSide = 5760;
+  try {
+    signal?.throwIfAborted();
+    const image = sharp(file);
+    const { autoOrient: { width, height } } = await image.metadata();
+    if (width / height < 0.4 || width / height > 2.5) {
+      throw new VideoReferenceMediaError('MiniMax H3 参考图的宽高比须在 0.4–2.5 之间。', 'invalid_reference_image_ratio');
+    }
+    const longest = Math.max(width, height);
+    const shortest = Math.min(width, height);
+    const scale = Math.min(maxSide / longest, Math.max(1, minSide / shortest));
+    const targetSide = Math.round(longest * scale);
+    let buffer: Buffer<ArrayBuffer> | undefined;
+    if (scale !== 1) {
+      const resized = image.autoOrient().resize({ width: targetSide, height: targetSide, fit: 'inside' });
+      const output = mimeType === 'image/png' ? resized.png() : resized.jpeg({ quality: 95, mozjpeg: true });
+      buffer = await output.toBuffer() as Buffer<ArrayBuffer>;
+    }
+    if ((buffer?.length ?? byteSize) > maxBytes) {
+      const input = buffer ?? await fs.promises.readFile(file);
+      buffer = await encodeImageWithinByteBudget(input, mimeType, targetSide, maxBytes, signal);
+      const dimensions = await sharp(buffer).metadata();
+      if (Math.min(dimensions.width, dimensions.height) < minSide) throw new Error('image below minimum side');
+    }
+    signal?.throwIfAborted();
+    return buffer;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof VideoReferenceMediaError) throw error;
+    throw new VideoReferenceMediaError('MiniMax H3 参考图处理失败，请换用宽高各为 256–5760 像素的 PNG 或 JPEG 图片后重试。', 'reference_preparation_failed');
   }
 }
 

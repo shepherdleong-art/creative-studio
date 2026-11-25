@@ -8,8 +8,9 @@ import { parseUsageSnapshot } from '../usage-snapshot.ts';
 import { videoJobUsageMeasurement } from '../usage-video-measurement.ts';
 import {
   MINIMAX_H3_PRICING_VERSION, minimaxH3Resolution, minimaxH3Quantities, minimaxH3UsageDetail,
-  parseMiniMaxH3VideoUsage, referenceVideoDurationSec, type MiniMaxH3VideoUsage,
+  parseMiniMaxH3VideoUsage, type MiniMaxH3VideoUsage,
 } from '../minimax-h3-pricing.ts';
+import { readCanvasReferenceVideoDuration } from './reference-video-duration.ts';
 import type { CanvasTaskRecord } from './tasks.ts';
 
 export interface MiniMaxH3UsageBasis {
@@ -65,17 +66,7 @@ export function minimaxH3CanvasUsageBasis(
   if (!resolution) return null;
   const plan = resolveCoreUsagePlan(identity, { resolution });
   if (!plan) return null;
-  // Read task inputs, never the editable graph. Resolve upstream output on this canvas only.
-  const references = generationMode === 'reference-to-video'
-    ? db.prepare(`SELECT a.mediaKind AS kind, a.durationSec
-        FROM creative_canvas_task_inputs i
-        LEFT JOIN creative_canvas_tasks upstream ON upstream.id = i.upstreamTaskId AND upstream.canvasId = ?
-        LEFT JOIN creative_canvas_assets a ON a.id = COALESCE(i.resolvedAssetId, i.assetId, upstream.outputAssetId)
-          AND a.canvasId = ? AND a.ready = 1
-        WHERE i.taskId = ? AND i.textContent IS NULL ORDER BY i.orderIndex`)
-      .all(task.canvasId, task.canvasId, task.id) as { kind: string | null; durationSec: number | null }[]
-    : [];
-  const inputVideoDurationSec = referenceVideoDurationSec(references);
+  const inputVideoDurationSec = readCanvasReferenceVideoDuration(db, task, generationMode);
   const videoUsage = parseMiniMaxH3VideoUsage({ resolution, inputVideoDurationSec, outputVideoDurationSec: Number(parameters.durationSec ?? 5) });
   if (!videoUsage) return { plan, quantity: null, detail: { resolution, inputVideoDurationSec } };
   return { plan, quantity: minimaxH3Quantities(videoUsage), videoUsage, detail: minimaxH3UsageDetail(videoUsage) };

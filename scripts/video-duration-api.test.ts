@@ -6,6 +6,7 @@ import ts from 'typescript';
 import os from 'node:os';
 import path from 'node:path';
 import { register } from 'node:module';
+import sharp from 'sharp';
 register('./typescript-extension-loader.mjs', import.meta.url);
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'video-capabilities-api-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
@@ -20,6 +21,7 @@ const filenames = await import('../lib/video-output-filenames.ts');
 const productionCodes = await import('../lib/media-core/production-code-reader.ts');
 const videoJobCreate = await import('../lib/video-job-create.ts');
 const providerVisibility = await import('../lib/provider-list-visibility.ts');
+const clientMediaDto = await import('../lib/client-media-dto.ts');
 
 // Production schema/handlers; only queue dispatch and HTTP transport are substituted.
 const db = getDb();
@@ -29,7 +31,7 @@ db.prepare(`INSERT INTO image_assets (id, projectId, role, filename, path) VALUE
 db.prepare(`INSERT INTO shot_sets (id, projectId, name) VALUES ('set','project','test')`).run();
 db.prepare(`INSERT INTO shots (id, shotSetId, sourceImageId, indexNum) VALUES ('shot','set','image',1)`).run();
 for (const [id, model] of [['sd25','doubao-seedance-2-5-260628'], ['sd20','doubao-seedance-2-0-260128'],
-  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5'], ['h3','minimax-h3'], ['wan3','wan-3.0']]) {
+  ['fast','doubao-seedance-2-0-fast-260128'], ['kling','kling-3.0'], ['qiniu','qiniuyun/kling-3.0'], ['k25','kling-2.5'], ['k40','qiniuyun/kling-4.0'], ['h3','minimax-h3'], ['wan3','wan-3.0']]) {
   db.prepare(`INSERT INTO video_providers (id, name, type, defaultModel, baseUrlEnv, apiKeyEnv, modelEnv, baseUrl, apiKey, enabled) VALUES (?, ?, 'openai-video', ?, '', '', '', 'http://invalid.test', 'test-key', 1)`).run(id, id, model);
 }
 const dependencies: Record<string, unknown> = {
@@ -47,6 +49,7 @@ const dependencies: Record<string, unknown> = {
   '@/lib/video-output-filenames': filenames,
   '@/lib/video-job-create': videoJobCreate,
   '@/lib/provider-list-visibility': providerVisibility,
+  '@/lib/client-media-dto': clientMediaDto,
   '@/lib/team-service/route-wrapper': {
     withTeamRoute: (_route: string, _method: string, handler: unknown) => handler,
   },
@@ -102,6 +105,25 @@ try {
     assert.equal(response.status, fastDuration === 15 ? 200 : 400);
     const stored = db.prepare('SELECT durationSec FROM video_jobs').all() as { durationSec: number }[];
     assert.deepEqual(stored.map(r => r.durationSec), fastDuration === 15 ? [30, 15] : []);
+  }
+  const kling4Source = path.join(dataRoot, 'kling4-source.png');
+  await sharp({ create: { width: 600, height: 900, channels: 3, background: '#336699' } }).png().toFile(kling4Source);
+  db.prepare("UPDATE image_assets SET originalPath = ? WHERE id = 'image'").run(kling4Source);
+  for (const handler of [single, batch]) {
+    const submitKling4 = (fields: Record<string, unknown> = {}) => {
+      const item = { providerId: 'k40', prompt: 'test', durationSec: 5, ...fields };
+      return submit(handler, handler === single ? { shotId: 'shot', ...item } : { shotId: 'shot', items: [item] });
+    };
+    assert.equal((await submitKling4()).status, 200);
+    assert.deepEqual(db.prepare('SELECT generationMode, resolution FROM video_jobs').get(), {
+      generationMode: 'image-to-video', resolution: '1080p',
+    });
+    assert.equal((await submitKling4({ generationMode: 'reference-to-video' })).status, 200);
+    assert.deepEqual(db.prepare('SELECT generationMode, resolution FROM video_jobs').get(), {
+      generationMode: 'reference-to-video', resolution: '1080p',
+    });
+    assert.equal((await submitKling4({ generationMode: 'frames-to-video' })).status, 400);
+    assert.equal((await submitKling4({ resolution: '720p' })).status, 400);
   }
   // Exercise real persistence, including canonical model selection and old NULL semantics.
   db.prepare(`UPDATE video_providers SET defaultModel = ' qiniuyun/kling-3.0 ' WHERE id = 'qiniu'`).run();

@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
-import { EmptyState, GroupHeading, GroupList } from '@/components/ui/Appearance';
+import { EmptyState, GroupHeading, GroupList, Tag } from '@/components/ui/Appearance';
 import { Dialog } from '@/components/ui/Dialog';
 import { teamError } from './client';
 import PageToolbar from './PageToolbar';
 import TeamConsoleOverview from './TeamConsoleOverview';
 import ResolveErrorButton from './ResolveErrorButton';
 import type { EmployeeDashboard } from '@/lib/team-service/dashboard';
-import { WORKSPACE_CREATE_ENTRIES, type WorkspaceRole } from '@/lib/workspace-navigation';
+import { WORKSPACE_CREATE_ENTRIES, WORKSPACE_PROJECT_CREATE_ENTRIES, type WorkspaceRole } from '@/lib/workspace-navigation';
 
 async function read<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
@@ -190,15 +190,18 @@ function EmployeeWorkbench({
               </div>
               <div className="p-3">
                 <strong className="block truncate text-ink" title={project.name}>{project.name}</strong>
-                <small className="mt-1 block truncate text-label text-ink-secondary">
-                  {[project.storeCode, project.productionType].filter(Boolean).join(' · ') || '未填店铺与生产类型'}
-                </small>
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <small className="min-w-0 truncate text-label text-ink-secondary">
+                    {[project.storeCode, project.productionType].filter(Boolean).join(' · ') || '未填店铺与生产类型'}
+                  </small>
+                  <Tag>{WORKSPACE_PROJECT_CREATE_ENTRIES[project.workflowType].name}</Tag>
+                </div>
+                {project.workflowType === 'complex_product' && <div className="mt-2 flex items-center gap-2">
                   {stepPips(project.progress.step, project.progress.empty)}
                   <small className="text-label text-ink-secondary">
                     第 {project.progress.step} 步 {project.progress.label}
                   </small>
-                </div>
+                </div>}
               </div>
             </Link>)}
           </div>}

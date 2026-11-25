@@ -1,4 +1,6 @@
 import { parseMiniMaxH3VideoUsage } from './minimax-h3-pricing.ts';
+import { QINIU_KLING_4_PROVIDER_ID } from './company-qiniu-kling-4.ts';
+import { QINIU_KLING_4_PRICING_VERSION } from './qiniu-kling-4-pricing.ts';
 import {
   BILLING_MODEL_PRICES,
   resolveCoreUsagePlan,
@@ -119,6 +121,13 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
   if (raw.videoUsage !== undefined && (!isH3 || !videoUsage || components.length !== 2)) {
     return { ok: false, error: 'usage snapshot video measurement is invalid' };
   }
+  const estimatedBillingSeconds = raw.estimatedBillingSeconds;
+  if (pricingVersion === QINIU_KLING_4_PRICING_VERSION
+    ? coreModelKey !== QINIU_KLING_4_PROVIDER_ID || typeof estimatedBillingSeconds !== 'number'
+      || !Number.isFinite(estimatedBillingSeconds) || estimatedBillingSeconds <= 0
+    : estimatedBillingSeconds !== undefined) {
+    return { ok: false, error: 'usage snapshot estimated billing seconds are invalid' };
+  }
   if (!category || !componentKeys || components.length !== componentKeys.length) {
     return { ok: false, error: 'usage snapshot core model is unsupported' };
   }
@@ -158,6 +167,7 @@ export function parseUsageSnapshot(value: unknown): { ok: true; parsed: ParsedSn
       snapshot: {
         schemaVersion: 1,
         ...(videoUsage ? { videoUsage } : {}),
+        ...(typeof estimatedBillingSeconds === 'number' ? { estimatedBillingSeconds } : {}),
         provider,
         coreModelKey,
         pricingVersion,

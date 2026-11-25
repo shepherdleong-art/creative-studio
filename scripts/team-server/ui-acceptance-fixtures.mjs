@@ -212,6 +212,12 @@ export const FIXTURE_HOOKS = {
     return ctx;
   },
 
+  async canvasList(ctx) {
+    const { canvas } = await ctx.api.json(ctx.employeeSession, '/api/canvas', 'POST', { name: '画布删除验收' }, 201);
+    ctx.canvasListItem = canvas;
+    return ctx;
+  },
+
   /** 展开多脚本后的纵向布局；只导入文案，不启动生产或试听。 */
   async batchScripts(ctx) {
     const projectId = ctx.project.id;
