@@ -33,6 +33,15 @@ assert.equal(providerErrorMessage('<html>bad gateway</html>'), null);
 assert.equal(providerErrorMessage({ request: { api_key: credential } }), null);
 assert.equal(providerErrorMessage(null), null);
 assert.equal(providerErrorMessage('bad request'), 'bad request');
+const downloadTimeout = providerErrorMessage({ status: 'failed', error: {
+  code: 'modelink_task_failed',
+  message: '[BadRequestError] Unable to download content from the provided URL before the timeout. ' +
+    'Check that the URL is publicly accessible and responds promptly, or upload the file and provide a file_id instead.',
+} });
+assert.equal(downloadTimeout, '上游下载参考素材超时；modelink_task_failed');
+assert.equal(providerErrorMessage(downloadTimeout), downloadTimeout, '画布再次整理原因时保留正文和错误码');
+assert.equal(providerErrorMessage('[BadRequestError] ["private request"]'), null);
+assert.equal(providerErrorMessage('[BadRequestError] <html>private</html>'), null);
 assert.equal(providerErrorMessage({ error: 'BadRequest', message: 'invalid resolution' }), 'invalid resolution');
 assert.equal(providerErrorMessage({ detail: [{ msg: 'invalid duration', input: 'private request' }] }), 'invalid duration');
 assert.equal(providerErrorMessage(new Error('bad request')), 'bad request');

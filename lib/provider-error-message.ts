@@ -8,7 +8,8 @@ function detailFrom(value: unknown, depth = 0): ProviderDetail | null {
   if (depth > 12) return null;
   if (value instanceof Error) return detailFrom(value.message, depth + 1);
   if (typeof value === 'string') {
-    const text = value.trim();
+    // Modelink 会在普通错误正文前加此标签。去掉它后仍按原规则过滤 HTML 和请求数据。
+    const text = value.trim().replace(/^\[BadRequestError\]\s+/, '');
     if (!text) return null;
     // LiteLLM 的 message 常是“异常前缀 + JSON + 模型附言”，JSON 里又嵌套 JSON 字符串。
     const start = text.indexOf('{');
@@ -32,6 +33,9 @@ function detailFrom(value: unknown, depth = 0): ProviderDetail | null {
       return null; // 残缺 JSON 不作为正文回显，避免泄漏请求字段。
     }
     if (/^\s*(?:<|\[)/.test(text)) return null;
+    if (/^Unable to download content from the provided URL before the timeout\.(?:\s|$)/i.test(text)) {
+      return { message: '上游下载参考素材超时' };
+    }
     return { message: text };
   }
   if (Array.isArray(value)) {
