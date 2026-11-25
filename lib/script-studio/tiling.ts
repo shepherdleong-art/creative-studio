@@ -150,9 +150,6 @@ async function tileSinglePage(
   const { tileHeight, degraded } = tileHeightForCount(sourceWidth, sourceHeight, limits);
   const resizeWidth = Math.max(1, Math.min(limits.maxImageWidth, sourceWidth));
   const resizeHeight = Math.max(1, Math.round(resizeWidth * sourceHeight / sourceWidth));
-  const overlap = validOverlap(limits.verticalOverlapRatio, tileHeight);
-  const step = Math.max(1, tileHeight - overlap);
-  const tileHeightCount = Math.max(1, Math.ceil(Math.max(1, resizeHeight - overlap) / step));
   // 超大图不物化整页缩放结果，改为逐条带「源坐标裁剪 → 缩放」的流式管线，
   // 峰值内存只与单条带相关；超限仍记日志供保护值校准（§2.5）。
   const useStripPipeline = sourceWidth * sourceHeight > limits.sourcePixelLimit
@@ -172,14 +169,21 @@ async function tileSinglePage(
   // 普通长图只缩放/编码整页一次；clone().toBuffer() 放在切片循环内会
   // 为每张切片重新执行整页管线。保持原编码格式，保证切片像素与旧流程一致。
   // 超限长图仍走逐条带管线，不在内存中物化整页。
-  const resizedBuffer = base ? await (directVision ? base.jpeg({ quality: limits.jpegQuality }) : base).toBuffer() : null;
+  const resizedPage = base
+    ? await (directVision ? base.jpeg({ quality: limits.jpegQuality }) : base).toBuffer({ resolveWithObject: true })
+    : null;
+  // 等比缩放有像素舍入，裁剪坐标必须以实际输出尺寸为准。
+  const { width: tileWidth, height: pageHeight } = resizedPage?.info ?? { width: resizeWidth, height: resizeHeight };
+  const overlap = validOverlap(limits.verticalOverlapRatio, tileHeight);
+  const step = Math.max(1, tileHeight - overlap);
+  const tileHeightCount = Math.max(1, Math.ceil(Math.max(1, pageHeight - overlap) / step));
   const tiles: ScriptStudioTile[] = [];
   for (let tileIndex = 0; tileIndex < tileHeightCount; tileIndex += 1) {
-    const top = Math.min(Math.max(0, tileIndex * step), Math.max(0, resizeHeight - tileHeight));
-    const height = Math.min(tileHeight, resizeHeight - top);
-    const buffer = resizedBuffer
-      ? await sharp(resizedBuffer)
-        .extract({ left: 0, top, width: resizeWidth, height })
+    const top = Math.min(Math.max(0, tileIndex * step), Math.max(0, pageHeight - tileHeight));
+    const height = Math.min(tileHeight, pageHeight - top);
+    const buffer = resizedPage
+      ? await sharp(resizedPage.data)
+        .extract({ left: 0, top, width: tileWidth, height })
         .jpeg({ quality: limits.jpegQuality })
         .toBuffer()
       : await tileStripBuffer(filePath, sourceWidth, sourceHeight, resizeWidth, resizeHeight, top, height, limits.jpegQuality);
@@ -188,7 +192,7 @@ async function tileSinglePage(
       imageBase64: buffer.toString('base64'),
       pageIndex,
       tileIndex,
-      width: resizeWidth,
+      width: tileWidth,
       height,
     });
   }

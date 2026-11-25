@@ -11,6 +11,7 @@ import { countVideoJobsForShot, planVideoJobDisplayName } from './video-output-f
 import { validateVideoReferenceRequest, videoReferenceCapability, type VideoReferenceKind } from './video-reference-contract.ts';
 import { validateVideoTailFrameAsset } from './video-tail-frame.ts';
 import { readVideoSourceReference } from './video-source-reference.ts';
+import { SEEDANCE_25 } from './video-providers/seedance-contract.ts';
 import {
   QINIU_KLING_4_DEFAULT_RESOLUTION, QINIU_KLING_4_RESOLUTIONS,
   supportsQiniuKling4Modes, validateQiniuKling4MiddleFrames,
@@ -367,7 +368,7 @@ export async function createVideoJobsForShot(input: {
         durationSec: item.durationSec,
         aspectRatio: aspectRatio ?? undefined,
         resolution: resolution ?? undefined,
-      });
+      }, { deferImageByteLimit: references.length === 0 && provider.model === SEEDANCE_25 });
       if (problems.length > 0) return { ok: false as const, error: itemError(index, problems.join('；')) };
       referencesByItem.push(references);
     }

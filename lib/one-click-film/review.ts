@@ -32,6 +32,13 @@ export interface ReviewState {
   reviewSourceId: string | null;
 }
 
+/** Display the playable part of legacy shots while retaining their IDs for edits and undo. */
+export function reviewForPlayback(review: ReviewState, durationUs: number): ReviewState {
+  if (review.durationUs === durationUs) return review;
+  return { ...review, durationUs, shots: review.shots.filter(shot => shot.startUs < durationUs)
+    .map(shot => ({ ...shot, endUs: Math.min(shot.endUs, durationUs) })) };
+}
+
 interface ReviewRow {
   id: string;
   runId: string;

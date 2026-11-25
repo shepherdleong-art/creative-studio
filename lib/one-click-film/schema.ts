@@ -450,6 +450,17 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
         WHERE status='ready';
     `,
   },
+  {
+    version: 13,
+    sql: `
+      ALTER TABLE one_click_film_analyses ADD COLUMN suggestedModel TEXT NOT NULL DEFAULT '';
+      ALTER TABLE one_click_film_entries ADD COLUMN modelPreset TEXT NOT NULL DEFAULT 'auto';
+      ALTER TABLE one_click_film_entries ADD COLUMN modelCustom TEXT NOT NULL DEFAULT '';
+      ALTER TABLE one_click_film_entries ADD COLUMN modelSource TEXT NOT NULL DEFAULT 'batch';
+      ALTER TABLE one_click_film_script_revisions ADD COLUMN modelPreset TEXT NOT NULL DEFAULT 'auto';
+      ALTER TABLE one_click_film_script_revisions ADD COLUMN modelCustom TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =

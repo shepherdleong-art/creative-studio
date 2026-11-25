@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from '../db.ts';
 import { completeJson, getAvailableProviders } from '../script-providers/index.ts';
 import { tileSourceImages } from '../script-studio/tiling.ts';
+import { parseSuggestedModel } from './contract.ts';
 import { normalizeSellingPointDraft, type SellingPointDraft } from './selling-points.ts';
 import {
   getAnalysis,
@@ -29,6 +30,7 @@ interface VisionResult {
   productName: string;
   appearance: string;
   sceneClues: string;
+  suggestedModel: string;
   points: VisionPoint[];
 }
 
@@ -65,6 +67,7 @@ function parseVisionResult(value: unknown): VisionResult {
     productName: asString(record.productName),
     appearance: asString(record.appearance),
     sceneClues: asString(record.sceneClues),
+    suggestedModel: parseSuggestedModel(record.suggestedModel),
     points,
   };
 }
@@ -115,6 +118,7 @@ export async function runOneClickFilmAnalysis(input: {
         tileCount: tiles.length,
         requirements: [
           '识别产品名称、外观特征（颜色、结构、场景线索）与可用于短视频的卖点',
+          '判断产品最适合的出镜人物 suggestedModel：儿童用品（如儿童沙发、童床、学习桌、玩具等）填 child，需要家长陪伴/亲子共用的填 parent_child，明确面向成年女性/男性填 adult_female/adult_male，更适合纯产品展示无人物填 none，不确定或通用填 auto',
           '每条卖点给出 text、kind、sourcePageIndex、tileRefs',
           'kind=appearance 表示外观特征；kind=usage 表示可从画面推断的使用动作或体验；kind=claim 表示具体功能主张',
           'kind=claim 必须能在图片中找到明确证据（文字或可辨认结构）；找不到证据时不要输出该条',
@@ -128,6 +132,7 @@ export async function runOneClickFilmAnalysis(input: {
           productName: 'string',
           appearance: 'string',
           sceneClues: 'string',
+          suggestedModel: 'auto|none|adult_female|adult_male|child|parent_child',
           points: [{ text: 'string', kind: 'appearance|usage|claim', sourcePageIndex: 'number', tileRefs: ['string'] }],
         },
       }),
@@ -176,6 +181,7 @@ export async function runOneClickFilmAnalysis(input: {
       productName: parsed.productName || '',
       appearance: parsed.appearance || parsed.sceneClues || '',
       sceneClues: parsed.sceneClues || '',
+      suggestedModel: parsed.suggestedModel,
       points,
       raw,
       providerId: provider.id,

@@ -160,6 +160,7 @@ function addReference(
 // Only these payload locations contain built-in catalog keys. Other assetId
 // fields (including media in restored arrangements) remain private resources.
 const STICKER_INSTANCE_PATHS: Record<string, readonly string[]> = {
+  '/api/one-click-film/[projectId]/packaging': ['options.assetStickers[]'],
   '/api/final-edit-groups/[id]': ['config.stickers[]'],
   '/api/final-edit-groups/[id]/packaging-layout': ['expectedPackaging.stickers[]', 'candidatePayload.stickers[]'],
   '/api/batch-production/batches/[id]/outputs/[planId]/clips': [

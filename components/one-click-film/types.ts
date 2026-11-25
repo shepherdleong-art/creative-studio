@@ -1,4 +1,4 @@
-import type { SoundMode, StoryStructure } from '@/lib/one-click-film/contract';
+import type { ModelPreset, ModelSource, SoundMode, StoryStructure } from '@/lib/one-click-film/contract';
 
 /** 一键成片工作台的客户端数据形状：只描述界面真正读到的字段。 */
 
@@ -27,6 +27,7 @@ export interface FilmAnalysis {
   productName: string;
   appearance: string;
   sceneClues: string;
+  suggestedModel?: string;
   confirmedAt: string | null;
   confirmedProductName: string;
   errorMessage: string | null;
@@ -41,6 +42,9 @@ export interface FilmEntry {
   structure: StoryStructure;
   structureSource: 'auto' | 'batch' | 'individual';
   soundMode: SoundMode;
+  modelPreset: ModelPreset;
+  modelCustom: string;
+  modelSource: ModelSource;
   status: 'pending' | 'draft' | 'confirmed';
   title: string;
   outline: string;
@@ -84,6 +88,7 @@ export interface FilmState {
   }>;
   analysis: FilmAnalysis | null;
   entries: FilmEntry[];
+  retiredEntries?: FilmEntry[];
 }
 
 export const STAGE_TABS = [
@@ -91,13 +96,13 @@ export const STAGE_TABS = [
   { id: 'analysis', label: '分析内容' },
   { id: 'scripts', label: '生成脚本' },
   { id: 'generation', label: '生成视频' },
-  { id: 'review', label: '审片与返工' },
-  { id: 'packaging', label: '包装与导出' },
+  { id: 'review', label: '审片与导出' },
 ] as const;
 
 export type StageTabId = (typeof STAGE_TABS)[number]['id'];
 
 export function parseStageTab(value: string | null | undefined): StageTabId {
+  if (value === 'packaging') return 'review';
   return STAGE_TABS.some((tab) => tab.id === value) ? value as StageTabId : 'upload';
 }
 

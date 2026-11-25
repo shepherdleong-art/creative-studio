@@ -82,6 +82,25 @@ for (const invalidRef of ['garbage2', 'tile_2_evil', 'page_3', '2foo', 'tile_0',
   assert.equal(parseTileRefIndex(invalidRef), null, `非法证据位置必须拒绝：${invalidRef}`);
 }
 
+// 等比缩放后，实际宽度可能比预估裁剪宽度小一个像素。
+const roundedImagePath = path.join(root, 'rounded.jpg');
+await sharp({
+  create: { width: 1301, height: 756, channels: 3, background: '#ffffff' },
+}).jpeg().toFile(roundedImagePath);
+db.prepare(`
+  INSERT INTO image_assets (id, projectId, role, filename, path, originalPath, mimeType, originalWidth, originalHeight)
+  VALUES ('rounded', 'p1', 'input', 'rounded.jpg', ?, ?, 'image/jpeg', 1301, 756)
+`).run(roundedImagePath, roundedImagePath);
+const roundedLimits = { ...getScriptStudioLimits(), maxImageWidth: 1200 };
+for (const directVision of [false, true]) {
+  const rounded = await tileSourceImages(db, 'p1', ['rounded'], { limits: roundedLimits, directVision });
+  assert.equal(rounded.totalTiles, 1);
+  const [tile] = rounded.pages[0]!.tiles;
+  const { width, height } = await sharp(Buffer.from(tile!.imageBase64, 'base64')).metadata();
+  assert.deepEqual([tile!.width, tile!.height], [1199, 697]);
+  assert.deepEqual([width, height], [tile!.width, tile!.height]);
+}
+
 // 超过保护值的大图：不再硬阻断，改走逐条带流式管线
 const bigImagePath = path.join(root, 'detail-big.png');
 await sharp({

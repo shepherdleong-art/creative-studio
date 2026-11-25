@@ -15,7 +15,7 @@ import styles from './login.module.css';
 // 记住登录的浏览器存储键：改名不换键，老用户升级后登录偏好还在。
 const REMEMBER_KEY = 'creative-studio-remember-login';
 
-export default function TeamLoginForm() {
+export default function TeamLoginForm({ destination = '/' }: { destination?: string }) {
   const searchParams = useSearchParams();
   const [mode, setMode] = useState<'login' | 'change'>('login');
   const [employeeId, setEmployeeId] = useState('');
@@ -44,10 +44,10 @@ export default function TeamLoginForm() {
       .then((response) => response.ok ? response.json() : null)
       .then((session: { authenticated?: boolean; mustChangePassword?: boolean } | null) => {
         if (session?.authenticated && session.mustChangePassword) setMode('change');
-        else if (session?.authenticated) window.location.assign('/');
+        else if (session?.authenticated) window.location.assign(destination);
       })
       .catch(() => undefined);
-  }, []);
+  }, [destination]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -80,7 +80,7 @@ export default function TeamLoginForm() {
         setEmployeeId('');
         setShowPassword(false);
       } else {
-        window.location.assign(changing ? '/team/login?reason=password-changed' : '/');
+        window.location.assign(changing ? '/team/login?reason=password-changed' : destination);
       }
     } catch (cause) {
       // 服务端拒绝的理由也贴在表单里，不弹浏览器对话框。

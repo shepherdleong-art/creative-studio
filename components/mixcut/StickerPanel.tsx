@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
-import type { PackagingTemplateId } from '@/lib/final-edit/packaging-vars';
+import type { PackagingTemplateId } from '@/lib/media-core/packaging-vars';
 import {
   STICKER_STYLE_BY_TEMPLATE,
   resolveStickerStyle,
@@ -57,7 +57,7 @@ function stickerResourceUrl(relativePath: string): string {
   return `/api/packaging/stickers/${relativePath.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, autoLayoutBlockedReason, onAdd, onDragStart, onDragEnd, onPatchSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker, onAutoLayout }: {
+export function StickerPanel({ active, enabled, busy, template, stickers, selectedSticker, defaultAnimation, addBlockedReason, autoLayoutBlockedReason, autoLayoutLabel, onAdd, onDragStart, onDragEnd, onPatchSticker, onDefaultAnimationChange, onApplyAnimationToAll, onPlaySticker, onAutoLayout }: {
   active: boolean;
   enabled: boolean;
   busy: boolean;
@@ -67,6 +67,7 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
   defaultAnimation: StickerAnimation;
   addBlockedReason: string;
   autoLayoutBlockedReason: string;
+  autoLayoutLabel?: string;
   onAdd: (choice: StickerAssetChoice) => void;
   onDragStart: (choice: StickerAssetChoice) => void;
   onDragEnd: () => void;
@@ -159,11 +160,11 @@ export function StickerPanel({ active, enabled, busy, template, stickers, select
           <button
             type="button"
             className={styles.stickerAutoButton}
-            aria-label={hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}
-            title={hasAutomatic ? '换一组基础贴纸' : '一键基础布置'}
+            aria-label={autoLayoutLabel ?? (hasAutomatic ? '换一组基础贴纸' : '一键基础布置')}
+            title={autoLayoutLabel ?? (hasAutomatic ? '换一组基础贴纸' : '一键基础布置')}
             disabled={busy || !enabled || !loaded || Boolean(error) || Boolean(autoLayoutBlockedReason)}
             onClick={() => onAutoLayout(templateAssets)}
-          ><Icon name="sparkle" size={13} />{hasAutomatic ? '换一组' : '一键布置'}</button>
+          ><Icon name="sparkle" size={13} />{autoLayoutLabel ?? (hasAutomatic ? '换一组' : '一键布置')}</button>
         </div>
         <button type="button" className={styles.stickerAnimationApplyAll} disabled={busy || !enabled || stickers.length === 0} onClick={() => onApplyAnimationToAll(currentAnimation)}>应用到全部贴纸</button>
         {autoLayoutBlockedReason && <p className={styles.hintLine}>{autoLayoutBlockedReason}</p>}

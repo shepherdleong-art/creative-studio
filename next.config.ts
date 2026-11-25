@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { NextConfig } from "next";
 
 interface ForbiddenPathsSpec {
@@ -23,11 +23,21 @@ const nextStandaloneExcludes = [
   ...forbiddenPaths.consumers.nextStandaloneExcludes.extra.map(renderForbiddenPath),
 ];
 
+function nextFilesystemRoot() {
+  const project = process.cwd();
+  if (process.env.NODE_ENV !== 'development' || process.env.CREATIVE_STUDIO_SERVER_RELEASE_ID !== 'local-preview') return project;
+  // A nested worktree can share its parent checkout's node_modules through a junction.
+  const dependencyOwner = dirname(realpathSync(join(project, 'node_modules')));
+  const fromOwner = relative(dependencyOwner, realpathSync(project));
+  return isAbsolute(fromOwner) || fromOwner.split(sep)[0] === '..' ? project : dependencyOwner;
+}
+
+const filesystemRoot = nextFilesystemRoot();
 const nextConfig: NextConfig = {
   output: 'standalone',
   // A staged build has its own lockfile; never infer a parent workspace root.
-  turbopack: { root: process.cwd() },
-  outputFileTracingRoot: process.cwd(),
+  turbopack: { root: filesystemRoot },
+  outputFileTracingRoot: filesystemRoot,
   compiler: {
     async runAfterProductionCompile({ projectDir, distDir }) {
       // Next 16 Turbopack does not apply route tracing excludes to instrumentation.

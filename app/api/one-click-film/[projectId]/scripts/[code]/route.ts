@@ -31,12 +31,24 @@ async function __teamRoutePOST(
       outline: typeof body.outline === 'string' ? body.outline : undefined,
       narration: typeof body.narration === 'string' ? body.narration : undefined,
       promptText: typeof body.promptText === 'string' ? body.promptText : undefined,
+      modelPreset: body.modelPreset,
+      modelCustom: body.modelCustom,
     };
     if (action === 'confirm') {
       return NextResponse.json({ entry: confirmEntry(db, { run, code, ...patch }) });
     }
     if (action === 'redraft') {
-      return NextResponse.json({ entry: await generateRedraft(db, run, code, typeof body.revision === 'number' ? body.revision : undefined) });
+      return NextResponse.json({
+        entry: await generateRedraft(
+          db,
+          run,
+          code,
+          typeof body.revision === 'number' ? body.revision : undefined,
+          body.modelPreset !== undefined
+            ? { modelPreset: body.modelPreset, modelCustom: body.modelCustom }
+            : undefined,
+        ),
+      });
     }
     return NextResponse.json({ entry: updateEntryDraft(db, { run, code, ...patch }) });
   } catch (error) {

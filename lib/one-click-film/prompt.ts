@@ -1,4 +1,4 @@
-import { STRUCTURE_LABELS, type SoundMode, type StoryStructure } from './contract.ts';
+import { STRUCTURE_LABELS, type ModelSelection, type SoundMode, type StoryStructure } from './contract.ts';
 
 /**
  * 分镜提示词构建：只产出确定性的文本，不调用模型。
@@ -14,6 +14,56 @@ export interface FilmSubject {
   appearance: string;
   points: string[];
   genre: string;
+  model?: ModelSelection;
+}
+
+export function modelPromptLine(model?: ModelSelection): string {
+  switch (model?.preset) {
+    case 'none':
+      return '人物：无出镜人物，纯产品与居家空间展示，不要出现人物全身或正脸。';
+    case 'adult_female':
+      return '人物：同一位约 25–35 岁成年女性体验者，日常居家穿搭，衣着、外貌和动作前后一致。';
+    case 'adult_male':
+      return '人物：同一位约 25–35 岁成年男性体验者，日常居家穿搭，衣着、外貌和动作前后一致。';
+    case 'child':
+      return '人物：同一位约 4–7 岁儿童（小朋友），身高体型与产品比例自然匹配，穿舒适日常童装，全片外貌、衣着和动作前后一致。';
+    case 'parent_child':
+      return '人物：同一组亲子（一位年轻家长与一位约 4–6 岁小朋友），孩子身高体型与产品比例自然匹配，两人衣着居家协调、外貌前后一致。';
+    case 'custom': {
+      const custom = model.custom?.trim();
+      return custom
+        ? `人物：${custom}，体型比例与产品自然匹配，全片外貌、衣着和动作前后一致。`
+        : '人物：同一位体验者，衣着、外观和动作前后一致。';
+    }
+    default:
+      return '人物：同一位体验者，衣着、外观和动作前后一致。';
+  }
+}
+
+/** 只替换全局设定里的「人物：...」行，保留用户手改的其他分镜与叙事。 */
+export function replaceModelLine(text: string, model?: ModelSelection): string {
+  const line = modelPromptLine(model);
+  if (/^人物：.*$/m.test(text)) {
+    return text.replace(/^人物：.*$/m, line);
+  }
+  return text;
+}
+
+function actorLabelFor(model?: ModelSelection): string {
+  switch (model?.preset) {
+    case 'adult_female':
+      return '年轻女性';
+    case 'adult_male':
+      return '年轻男性';
+    case 'child':
+      return '小朋友';
+    case 'parent_child':
+      return '小朋友和家长';
+    case 'custom':
+      return model.custom?.trim() || '体验者';
+    default:
+      return '人物';
+  }
 }
 
 export interface PromptBuildInput {
@@ -36,19 +86,36 @@ interface Beat {
 
 /** 结构 → 分镜节拍。每个结构至少 6 镜，覆盖正文时长。 */
 function beatsFor(input: PromptBuildInput, focus: string): Beat[] {
-  const { product, appearance } = input.subject;
+  const { product, appearance, model } = input.subject;
   const scene = appearance || '参考素材中的真实使用场景';
-  const entry: Beat = { weight: 2, direction: `全景｜场景入口，平视侧跟｜人物走进${scene}，与${product}自然同框。` };
-  const contact: Beat = { weight: 2, direction: `中景｜人物斜侧面，跟随手部轻推｜人物走近${product}，伸手接触外观可见的部位。` };
-  const action: Beat = { weight: 2.5, direction: `中近景｜人物侧面，顺动作横移｜人物连续完成一次日常使用动作，让手与${product}的接触清楚可见。` };
-  const detail: Beat = { weight: 2, direction: `特写｜产品外侧，缓慢靠近｜围绕「${focus}」拍清手与${product}接触的一处细节，只使用参考素材可见的外观。` };
-  const result: Beat = { weight: 2.5, direction: `中景｜人物正侧方，固定机位｜人物完成使用后稍作停留，用表情和动作交代感受，与${product}同框。` };
-  const close: Beat = { weight: 2, direction: `全景｜场景一侧，缓慢拉远｜人物继续使用${product}，在同一空间自然收尾。` };
-  const question: Beat = { weight: 2, direction: `近景｜人物侧前方，轻推｜人物在接触${product}前短暂停顿，用动作带出对「${focus}」的疑问。` };
-  const check: Beat = { weight: 2, direction: '近景｜回到开场同一角度，镜头稳定｜人物再次尝试刚才的动作，呈现实际体验对开头疑问的回答。' };
+  if (model?.preset === 'none') {
+    const entry: Beat = { weight: 2, direction: `全景｜场景入口，缓慢推近｜呈现${scene}中的${product}全貌与空间光影。` };
+    const contact: Beat = { weight: 2, direction: `中景｜产品斜侧面，平稳环绕｜展示${product}的整体轮廓与外观结构。` };
+    const action: Beat = { weight: 2.5, direction: `中近景｜产品正面，缓慢横移｜聚焦${product}的表面纹理与细节做工。` };
+    const detail: Beat = { weight: 2, direction: `特写｜产品外侧，缓慢靠近｜围绕「${focus}」拍清${product}的关键细节，只使用参考素材可见的外观。` };
+    const result: Beat = { weight: 2.5, direction: `中景｜产品正侧方，固定机位｜自然光下停留展示${product}的质感与整体比例。` };
+    const close: Beat = { weight: 2, direction: `全景｜场景一侧，缓慢拉远｜在同一空间中自然收尾，呈现${product}与环境的融合。` };
+    const question: Beat = { weight: 2, direction: `近景｜产品侧前方，轻推｜对准「${focus}」对应的部位，用细节构图带出体验疑问。` };
+    const check: Beat = { weight: 2, direction: `近景｜回到开场同一角度，镜头稳定｜清晰展示${product}对应部位的真实状态，回应开头疑问。` };
+    if (input.structure === 'result') {
+      return [result, entry, contact, detail, action, { ...close, direction: `中景｜回到开场机位，缓慢拉远｜重现开头的产品质感与空间氛围。` }];
+    }
+    if (input.structure === 'problem') return [question, entry, contact, action, detail, check, close];
+    return [entry, contact, action, detail, result, close];
+  }
+
+  const actor = actorLabelFor(model);
+  const entry: Beat = { weight: 2, direction: `全景｜场景入口，平视侧跟｜${actor}走进${scene}，与${product}自然同框。` };
+  const contact: Beat = { weight: 2, direction: `中景｜人物斜侧面，跟随手部轻推｜${actor}走近${product}，伸手接触外观可见的部位。` };
+  const action: Beat = { weight: 2.5, direction: `中近景｜人物侧面，顺动作横移｜${actor}连续完成一次日常使用动作，让与${product}的接触清楚可见。` };
+  const detail: Beat = { weight: 2, direction: `特写｜产品外侧，缓慢靠近｜围绕「${focus}」拍清与${product}接触的一处细节，只使用参考素材可见的外观。` };
+  const result: Beat = { weight: 2.5, direction: `中景｜人物正侧方，固定机位｜${actor}完成使用后稍作停留，用表情和动作交代感受，与${product}同框。` };
+  const close: Beat = { weight: 2, direction: `全景｜场景一侧，缓慢拉远｜${actor}继续使用${product}，在同一空间自然收尾。` };
+  const question: Beat = { weight: 2, direction: `近景｜人物侧前方，轻推｜${actor}在接触${product}前短暂停顿，用动作带出对「${focus}」的疑问。` };
+  const check: Beat = { weight: 2, direction: `近景｜回到开场同一角度，镜头稳定｜${actor}再次尝试刚才的动作，呈现实际体验对开头疑问的回答。` };
 
   if (input.structure === 'result') {
-    return [result, entry, contact, detail, action, { ...close, direction: `中景｜回到开场机位，缓慢拉远｜重现开头的使用状态，让观众理解人物为什么喜欢这个时刻。` }];
+    return [result, entry, contact, detail, action, { ...close, direction: `中景｜回到开场机位，缓慢拉远｜重现开头的使用状态，让观众理解为什么喜欢这个时刻。` }];
   }
   if (input.structure === 'problem') return [question, entry, contact, action, detail, check, close];
   return [entry, contact, action, detail, result, close];
@@ -74,10 +141,13 @@ export function buildPromptBlocks(input: PromptBuildInput): string[] {
   const focus = input.subject.points[0] || '日常使用体验';
   const beats = input.directions?.length ? input.directions.map((direction) => ({ direction, weight: 1 })) : beatsFor(input, focus);
   const lines = narrationLines(input.narration);
+  const nativeVoiceGuide = input.subject.model?.preset === 'none'
+    ? '原生画外音，口吻像在向朋友介绍实际体验。画面专注展示产品与空间，旁白在画外连续讲述。'
+    : '原生画外音，口吻像在向朋友介绍实际体验。人物自然使用产品，旁白在画外连续讲述。';
   const voice = input.sound === 'native'
     ? [
         '【配音安排】',
-        '原生画外音，口吻像在向朋友介绍实际体验。人物自然使用产品，旁白在画外连续讲述。',
+        nativeVoiceGuide,
         ...timedLines(lines.map((line) => ({ weight: line.length, direction: line })), input.durationSec, '旁白'),
       ]
     : ['【声音要求】', '仅保留现场环境声与动作声，无旁白、对白、歌声或背景音乐。'];
@@ -86,7 +156,7 @@ export function buildPromptBlocks(input: PromptBuildInput): string[] {
     `【${input.durationSec} 秒 · ${input.subject.genre} · ${input.aspectRatio} 画幅】`,
     [
       '【全局设定】',
-      '人物：同一位体验者，衣着、外观和动作前后一致。',
+      modelPromptLine(input.subject.model),
       `产品：${input.subject.product}。全片以参考素材为准。`,
       `场景：${input.subject.appearance || '参考素材中的真实使用场景'}。`,
       `卖点：${input.subject.points.join('、')}。`,

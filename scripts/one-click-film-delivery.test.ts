@@ -13,9 +13,10 @@ const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/sc
 const { getOrCreateRun } = await import('../lib/one-click-film/store.ts');
 const { upsertReviewFromDetection, approveReview } = await import('../lib/one-click-film/review.ts');
 const {
-  buildSubtitleCues, filmTimeForBodyTime, packagingEligibility, preparePackaging,
-  updatePackagingDraft, listPackaging,
+  buildDecorationCues, buildSubtitleCues, filmTimeForBodyTime, packagingEligibility, parsePackagingOptions,
+  preparePackaging, updatePackagingDraft, listPackaging,
 } = await import('../lib/one-click-film/packaging.ts');
+const { packagingOverlayConfig, splitFilmCoverTitle, stickersForFilmPoints } = await import('../lib/one-click-film/packaging-edit.ts');
 const { exportEligibility, exportEntries, exportZipEntries, listExports } = await import('../lib/one-click-film/exports.ts');
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 
@@ -32,6 +33,25 @@ assert.equal(nativeCues[1]!.endSec, 15);
 assert.deepEqual(buildSubtitleCues({ narration: '第一句。', soundMode: 'none', durationSec: 15 }), []);
 const ttsCues = buildSubtitleCues({ narration: '第一句。第二句。', soundMode: 'tts', durationSec: 15, audioDurationUs: 10_000_000 });
 assert.equal(ttsCues[1]!.endSec, 10, 'TTS 字幕按音频实际时长对时');
+
+const cover = splitFilmCoverTitle('林氏钢琴键系列沙发：高靠背分区承托，坐躺都自在');
+assert.deepEqual(cover, { title: '林氏钢琴键系列沙发', subtitle: '高靠背分区承托，坐躺都自在' });
+const points = buildDecorationCues({ durationSec: 15, narration: '试试分段靠背，坐躺都自在。',
+  points: ['宽厚扶手、分段靠背和多块独立填充组成了整个横向结构，视觉上沉稳利落'],
+  words: [{ text: '分段靠背', startUs: 3_000_000, endUs: 3_600_000 }] });
+assert.equal(points[0]?.text, '分段靠背');
+assert.equal(points[0]?.startSec, 3);
+assert.ok(points.every(cue => Array.from(cue.text).length <= 14));
+const assetStickers = stickersForFilmPoints(points, 360);
+assert.equal(assetStickers[0]?.startFrame, 92);
+for (const hasCover of [true, false]) {
+  const config = packagingOverlayConfig({ template: 'overlay-minimal', title: cover.title, options: parsePackagingOptions({
+    cover: hasCover, coverText: { subtitle: cover.subtitle }, assetStickers,
+  }), pointCues: points });
+  assert.equal(config.varsOverrides?.subtitle, cover.subtitle);
+  assert.equal(config.stickers?.[0]?.startFrame, hasCover ? 92 : 72);
+  assert.equal(config.stickers?.[0]?.startFrame, Math.round(config.pointCues![0]!.startSec * 24));
+}
 
 const dbPath = path.join(dataRoot, 'workbench.db');
 const db = new Database(dbPath);

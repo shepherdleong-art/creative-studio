@@ -134,7 +134,11 @@ function mockProvider(media) {
           fixtureJson(req, res, { choices: [{ message: { content: JSON.stringify({
             title: `${script.entry} ${take}`, angle: script.structure,
             outline: `${script.entry} ${take}大纲，坐到云朵床边并倚靠。`,
-            narration: `${script.entry} ${take}口播，我坐到床边，靠在软包上。`,
+            narration: script.previous
+              ? '忙完想歇会儿，我把脚抬上床，背后刚好有个地方能靠。'
+              : script.entry === 'F01'
+                ? '回家先在床边坐会儿，背一靠上软包，整个人都松下来了。'
+                : '坐久了背后没支撑？往床头挪一挪，软靠背刚好托住。',
             shots: Array.from({ length: 6 }, (_, index) => `中近景｜侧跟｜${take}动作 ${index + 1}，自然倚靠床头。`),
           }) } }] });
         }
@@ -221,7 +225,7 @@ function assertContinuousAudio(file, offset, bgm = false) {
   }
 }
 
-function assertPackagedVisuals(file, code) {
+function assertPackagedVisuals(file, code, firstPoint) {
   const width = 90;
   const height = 120;
   const gray = ff(['-i', file, '-an', '-vf', `scale=${width}:${height}`, '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1']);
@@ -237,9 +241,15 @@ function assertPackagedVisuals(file, code) {
   assert.ok(coverPixels > 250, `${code} 第 19 帧有封面，第 20 帧切回正文，变化像素 ${coverPixels}`);
   const captionPixels = changed(42, 52, 90, 116);
   assert.ok(captionPixels > 12, `${code} 对时后的字幕没有烧进画面，变化像素 ${captionPixels}`);
-  const decorationPixels = code === 'F02' ? changed(113, 122, 19, 70) : changed(21, 38, 19, 70);
+  assert.ok(firstPoint, `${code} 没有已保存的花字`);
+  // 花字时间以正文为起点。导出加了 20 帧封面，极简模板的入场动画为 0.3 秒。
+  const beforePointFrame = 20 + Math.max(0, Math.ceil(firstPoint.startSec * 24) - 1);
+  const visiblePointSec = Math.max(firstPoint.startSec, 0.15) + 0.45;
+  assert.ok(visiblePointSec < firstPoint.endSec, `${code} 的第一条花字区间过短，无法取样`);
+  const visiblePointFrame = 20 + Math.round(visiblePointSec * 24);
+  const decorationPixels = changed(beforePointFrame, visiblePointFrame, 19, 70);
   if (code === 'F02') {
-    assert.ok(changed(107, 113, 19, 70) < 10, 'F02 的第一条花字在 4 秒之前出现');
+    assert.ok(changed(20, beforePointFrame, 19, 70) < 10, 'F02 的第一条花字早于保存的入点出现');
   }
   assert.ok(decorationPixels > 25, `${code} 的包装没有花字，变化像素 ${decorationPixels}`);
   return { coverPixels, captionPixels, decorationPixels };
@@ -402,6 +412,7 @@ try {
   }));
   page = await context.newPage();
   page.setDefaultTimeout(45_000);
+  page.on('pageerror', error => localErrors.push(error.message));
   page.on('response', (response) => {
     if (response.status() >= 400 && response.url().includes('/api/one-click-film/')) {
       void response.text().then((body) => { localErrors.push(`HTTP ${response.status()} ${new URL(response.url()).pathname} ${body.slice(0, 300)}`); }).catch(() => {});
@@ -508,40 +519,41 @@ try {
   for (const script of scripts) assert.ok(submitted.some((job) => job.request.draft === true && job.prompt === script.promptText));
   await page.getByRole('article').filter({ has: page.getByRole('heading', { name: /^F02/ }) })
     .getByRole('button', { name: /^镜头 2/ }).click();
-  const preview = page.getByLabel('当前成片');
+  const preview = page.locator('video[aria-label$="编辑预览"]');
+  const openPackaging = (code) => page.getByRole('button', { name: `打开 ${code} 预览与编辑` }).click();
   await expect(preview).toBeVisible();
   await assertPlayable(preview);
   const originalUrl = await preview.getAttribute('src');
   const original = path.join(root, 'original-f02.mp4');
   fs.writeFileSync(original, await responseBytes(originalUrl));
-  const secondShot = page.getByRole('button', { name: 's2', exact: true });
+  const secondShot = page.getByRole('button', { name: '镜头 02', exact: true });
   await expect(secondShot).toHaveAttribute('aria-current', 'true');
-  await expect(page.getByText('00:06.00–00:09.00', { exact: true })).toBeVisible();
-  const playhead = page.getByRole('slider', { name: '时间轴播放头' });
+  await expect(page.getByText('6.00–9.00 秒', { exact: true })).toBeVisible();
+  const playhead = page.getByRole('slider', { name: '审片时间轴播放头' });
   const split = page.getByRole('button', { name: '在播放头处切分' });
   await secondShot.click();
   await expect(split).toBeDisabled();
   const sliderBox = await playhead.boundingBox();
   const y = sliderBox.y + sliderBox.height / 2;
   const x = (fraction) => sliderBox.x + 8 + (sliderBox.width - 16) * fraction;
-  await page.mouse.move(x(6 / 15), y);
+  await page.mouse.move(x((6 + 20 / 24) / (15 + 20 / 24)), y);
   await page.mouse.down();
-  await page.mouse.move(x(0.5), y, { steps: 12 });
+  await page.mouse.move(x((7.5 + 20 / 24) / (15 + 20 / 24)), y, { steps: 12 });
   await page.mouse.up();
   assert.ok(Math.abs(await preview.evaluate((video) => video.currentTime) - 7.5) < 0.12);
   assert.equal(await preview.evaluate((video) => video.paused), true);
   const draggedFrame = Number(await playhead.inputValue());
   await playhead.press('ArrowRight');
   await expect(playhead).toHaveValue(String(draggedFrame + 1));
-  const cutUs = Math.round((draggedFrame + 1) * 1e6 / 24);
+  const cutUs = Math.round((draggedFrame + 1 - 20) * 1e6 / 24);
   await expect.poll(() => preview.evaluate((video) => video.currentTime)).toBeCloseTo(cutUs / 1e6, 2);
-  const timeline = page.getByRole('region', { name: '剪辑时间轴' });
+  const timeline = page.getByRole('region', { name: '审片时间轴' });
   await expect.poll(() => timeline.locator('button img').evaluateAll((images) =>
     images.filter((image) => image.naturalWidth > 0).length)).toBe(3);
   const legacyThumbnail = await secondShot.locator('img').getAttribute('src');
   assert.equal(new Set(await timeline.locator('button img').evaluateAll((images) => images.map((image) => image.src))).size, 3);
   assert.ok((await secondShot.boundingBox()).height >= 60, '画面轨保留可读高度');
-  assert.ok((await timeline.locator('[class*="playheadLine"]').boundingBox()).height >= 90, '播放头跨越画面和声音轨');
+  assert.ok((await timeline.locator('[class*="draftPlayhead"] i').boundingBox()).height >= 90, '播放头跨越画面和声音轨');
   await assertReachable(split);
   const readF02 = async () => {
     const { reviews } = await api.json(member, `/api/one-click-film/${projectId}/review`);
@@ -549,24 +561,26 @@ try {
   };
   assert.equal((await readF02()).shots.length, 3, '拖动只改变预览位置');
   if (output) {
-    await page.getByRole('tab', { name: '审片与返工' }).scrollIntoViewIfNeeded();
+    await page.getByRole('tab', { name: '审片与导出' }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, 'ui-review.png'), animations: 'disabled' });
   }
   await split.click();
-  await expect(page.getByRole('button', { name: 's4', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '镜头 04', exact: true })).toBeVisible();
   assert.deepEqual((await readF02()).shots.map((shot) => shot.endUs), [6e6, cutUs, 9e6, 15e6]);
   await expect(preview).toHaveAttribute('src', originalUrl);
+  await secondShot.click();
   await page.getByRole('button', { name: '与下一镜合并' }).click();
-  await expect(page.getByRole('button', { name: 's4', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '镜头 04', exact: true })).toHaveCount(0);
   assert.deepEqual((await readF02()).shots.map((shot) => shot.endUs), [6e6, 9e6, 15e6]);
   await page.goto(`/one-click-film/${projectId}?stage=review`);
-  await page.getByRole('button', { name: /^F02 / }).click();
+  await openPackaging('F02');
+  await secondShot.click();
   await page.getByRole('button', { name: '撤回合并' }).click();
-  await expect(page.getByRole('button', { name: 's4', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '镜头 04', exact: true })).toBeVisible();
   assert.deepEqual((await readF02()).shots.map((shot) => shot.endUs), [6e6, cutUs, 9e6, 15e6]);
   await secondShot.click();
   await page.getByRole('button', { name: '与下一镜合并' }).click();
-  await expect(page.getByRole('button', { name: 's4', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '镜头 04', exact: true })).toHaveCount(0);
   console.log('通过：两个素材框独立拖放；播放头同步预览和逐帧定位，切分后片源不变，合并恢复原区间。');
 
   stage = '候选生成、采用、撤销与恢复';
@@ -580,7 +594,7 @@ try {
   await page.getByRole('button', { name: '循环预览接缝' }).click();
   await expect(page.getByLabel('接缝预览')).toBeVisible();
   const inspector = page.getByRole('region', { name: '审片操作' });
-  assert.equal(await inspector.evaluate((element) => getComputedStyle(element).overflowY), 'auto');
+  assert.equal(await inspector.evaluate((element) => getComputedStyle(element.closest('aside')).overflowY), 'auto');
   await page.getByRole('button', { name: '调整入点与出点' }).click();
   const trim = page.getByRole('dialog', { name: '调整候选片段' });
   const trimPreview = trim.getByLabel('候选剪裁预览');
@@ -607,9 +621,9 @@ try {
   if (output) await page.screenshot({ path: path.join(output, 'ui-candidate-trim.png'), animations: 'disabled' });
   let unblockReview;
   const previewBarrier = new Promise((resolve) => { unblockReview = resolve; });
-  const reviewEndpoint = '**/api/one-click-film/*/review';
+  const reviewEndpoint = '**/api/one-click-film/*/packaging';
   const holdReview = async (route) => {
-    if (route.request().method() === 'GET') await previewBarrier;
+    if (route.request().postDataJSON()?.action === 'open') await previewBarrier;
     await route.continue();
   };
   await page.route(reviewEndpoint, holdReview, { times: 1 });
@@ -639,8 +653,12 @@ try {
 
   stage = '按采用来源转高清';
   for (const code of ['F02', 'F01']) {
-    await page.getByRole('button', { name: new RegExp(`^${code} `) }).click();
-    await page.getByTestId('one-click-film-approve').click();
+    if (code !== 'F02') {
+      await page.getByRole('button', { name: '返回成片卡片' }).click();
+      await openPackaging(code);
+      await page.getByRole('tab', { name: '镜头', exact: true }).click();
+    }
+    await page.getByRole('button', { name: '标记审片通过', exact: true }).click();
     if (code === 'F02') {
       await expect(page.getByRole('button', { name: '一键高清', exact: true })).toBeVisible();
       const fixtureDb = new Database(path.join(root, 'data', 'workbench.db'));
@@ -675,7 +693,7 @@ try {
   console.log('通过：按实际采用的三个样片来源转高清。');
 
   stage = '真实包装、时间轴编辑和交付';
-  await page.getByRole('tab', { name: '包装与导出' }).click();
+  await page.getByRole('button', { name: '返回成片卡片' }).click();
   const beforePackaging = page.getByRole('button', { name: '打开 F01 预览与编辑' });
   await expect.poll(() => beforePackaging.locator('img').evaluate((image) => image.naturalWidth)).toBeGreaterThan(0);
   const portrait = await beforePackaging.boundingBox();
@@ -688,25 +706,29 @@ try {
   await expect.poll(async () => (await readPackaging()).length).toBe(2);
   assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').title, scriptTitle);
   assert.ok((await readPackaging()).every((item) => item.status === 'pending' && !item.videoUrl));
-  const openPackaging = (code) => page.getByRole('button', { name: `打开 ${code} 预览与编辑` }).click();
+
   await openPackaging('F02');
-  await expect(page.getByRole('region', { name: '包装时间轴', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '审片时间轴', exact: true })).toBeVisible();
   assert.deepEqual(await page.locator('[data-packaging-track]').evaluateAll((rows) =>
     rows.map((row) => row.dataset.packagingTrack)), ['subtitle', 'packaging', 'sticker', 'picture', 'voice', 'music']);
-  await page.getByRole('button', { name: '播放完整预览' }).click();
+  await page.getByRole('button', { name: '安全区', exact: true }).click();
+  await expect(page.getByLabel('4% 预览安全区')).toBeVisible();
+  await page.getByRole('button', { name: '全屏', exact: true }).click();
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+  await page.getByRole('button', { name: '播放', exact: true }).click();
   await expect.poll(() => page.getByLabel('F02 编辑预览').evaluate((video) => video.currentTime)).toBeGreaterThan(0.1);
-  await page.getByRole('button', { name: '暂停预览' }).click();
-  await page.getByRole('tab', { name: '镜头返工' }).click();
-  await page.getByRole('button', { name: 's2', exact: true }).click();
-  await expect(page.getByText('00:06.00–00:09.00', { exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: '包装调整' }).click();
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+  await page.getByRole('button', { name: '镜头 02', exact: true }).click();
+  await expect(page.getByText('6.00–9.00 秒', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: '字幕', exact: true }).click();
-  await page.getByRole('button', { name: '识别口播字幕' }).click();
+  await page.getByRole('button', { name: '重新识别口播' }).click();
   await expect(page.getByText('口播字幕已识别。')).toBeVisible();
   const captionTrack = page.getByRole('group', { name: '字幕', exact: true });
   await captionTrack.getByRole('button').first().click();
   const text = page.getByLabel('当前字幕');
   await expect(text).toHaveValue('这是原片旁白。');
+  await expect(page.getByLabel('字幕样式字体')).toBeVisible();
+  await page.getByRole('spinbutton', { name: '字号数值', exact: true }).fill('62');
   await text.fill('这是校对后的旁白。');
   const caption = page.getByRole('button', { name: '移动画面字幕' });
   const dragBy = async (locator, dx, dy) => {
@@ -721,33 +743,46 @@ try {
     await page.mouse.up();
   };
   await dragBy(caption, 0, -8);
+  const subtitleSvg = page.locator('[class*="captionArt"] svg');
+  await expect(subtitleSvg.locator('text').last()).toHaveText('这是校对后的旁白。');
+  assert.equal(await subtitleSvg.locator('tspan').count(), 0);
   await page.getByRole('tab', { name: '花字包装', exact: true }).click();
-  const coverTitle = page.frameLocator('iframe[title="可编辑包装图层"]').locator('[data-point-id="cover:title"]');
+  const coverTitle = page.frameLocator('iframe[title="包装版式编辑"]').locator('[data-point-id="cover:title"]');
+  await expect(page.getByRole('radiogroup', { name: '包装模板' })).toBeVisible();
+  const titleFont = page.getByRole('combobox', { name: '主标题字体', exact: true });
+  await expect.poll(() => titleFont.locator('option').count()).toBeGreaterThan(1);
+  const fontId = await titleFont.locator('option').nth(1).getAttribute('value');
+  await titleFont.selectOption(fontId);
+  await expect.poll(() => page.locator('iframe[title="包装版式编辑"]').getAttribute('srcdoc')).toContain(fontId);
   await expect(coverTitle).toBeVisible();
   await dragBy(coverTitle, 8, 8);
   const packageLane = page.getByRole('group', { name: '花字包装', exact: true }).locator('[data-track-lane]');
   const laneWidth = await packageLane.evaluate((element) => element.clientWidth);
   await dragBy(page.getByLabel('调整字幕出点'), laneWidth * 0.25 / (15 + 20 / 24), 0);
-  await dragBy(page.getByLabel('调整花字包装入点'), laneWidth * 4 / (15 + 20 / 24), 0);
+  const originalPointStart = (await readPackaging()).find((item) => item.entryCode === 'F02').pointCues[0].startSec;
+  await dragBy(page.getByLabel('调整花字包装入点').first(), laneWidth * 0.25 / (15 + 20 / 24), 0);
   await page.getByRole('tab', { name: '贴纸', exact: true }).click();
-  await page.getByRole('button', { name: '添加星星' }).click();
-  await expect(page.getByRole('button', { name: '移动星星贴纸' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '搜索贴纸名称' })).toBeVisible();
+  await page.getByRole('button', { name: /^添加贴纸 / }).first().click();
+  await expect(page.frameLocator('iframe[title="包装版式编辑"]').locator('.packaging-sticker').first()).toBeAttached();
   await page.getByRole('button', { name: '保存草稿' }).click();
   await expect(page.getByText('已保存草稿。')).toBeVisible();
   const f02Draft = (await readPackaging()).find((item) => item.entryCode === 'F02');
-  assert.ok(f02Draft.options.subtitlePosition.y < 91);
+  assert.equal(f02Draft.options.subtitleStyle.fontSizePx, 62);
+  assert.equal(f02Draft.options.titleFont.file, fontId);
+  assert.ok(f02Draft.options.subtitlePosition.y < 82);
   assert.ok(f02Draft.options.layouts['overlay-minimal'].cover.title);
   assert.equal(f02Draft.subtitleCues[0].text, '这是校对后的旁白。');
   assert.ok(f02Draft.subtitleCues[0].endSec > 2.8);
-  assert.ok(Math.abs(f02Draft.pointCues[0].startSec - 4) <= 1 / 24);
-  assert.equal(f02Draft.options.stickers[0].kind, 'star');
+  assert.ok(f02Draft.pointCues[0].startSec > originalPointStart);
+  assert.ok(f02Draft.options.assetStickers.some((sticker) => sticker.origin.kind === 'manual'));
   assert.equal(f02Draft.videoUrl, null);
   if (output) await page.screenshot({ path: path.join(output, 'ui-packaging-draft.png'), animations: 'disabled' });
   await assertReachable(page.getByRole('button', { name: '选入导出' }));
   await page.getByRole('button', { name: '选入导出' }).click();
   await openPackaging('F01');
   await page.getByRole('button', { name: '选入导出' }).click();
-  assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, false);
+  assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, true);
   await page.getByRole('button', { name: '全选可导出成片' }).click();
   const confirmExport = async () => {
     await page.getByTestId('one-click-film-export').click();
@@ -789,7 +824,8 @@ try {
     assert.equal(Number(video.nb_read_frames), 380);
     assert.ok(streams.some((stream) => stream.codec_type === 'audio'));
     assertContinuousAudio(file, 20 / 24, true);
-    const visual = assertPackagedVisuals(file, delivery.entryCode);
+    const expectedPackaging = delivery.entryCode === 'F02' ? f02Draft : autoCaption;
+    const visual = assertPackagedVisuals(file, delivery.entryCode, expectedPackaging.pointCues[0]);
     checked.push({ entry: delivery.entryCode, filename: path.basename(file), fps: video.avg_frame_rate,
       frames: Number(video.nb_read_frames), sha256: delivery.checksum, ...visual });
     files.push(file);
@@ -811,7 +847,8 @@ try {
   for (const video of await history.filter({ hasText: 'F02' }).locator('video').all()) await assertPlayable(video);
   stage = '整条重抽的真实声音和实际切点';
   await page.getByRole('tab', { name: /审片/ }).click();
-  await page.getByRole('button', { name: /^F01 / }).click();
+  await openPackaging('F01');
+  await page.getByRole('tab', { name: '镜头', exact: true }).click();
   const originalF01 = await preview.getAttribute('src');
   const originalPrompt = (await workspace()).entries.find((entry) => entry.code === 'F01').promptText;
   await page.getByRole('button', { name: '整条重抽', exact: true }).click();
@@ -829,8 +866,8 @@ try {
   await expect(preview).toHaveAttribute('src', originalF01);
   await page.getByRole('button', { name: '采用整条' }).click();
   await expect(preview).not.toHaveAttribute('src', originalF01, { timeout: 120_000 });
-  await page.getByRole('button', { name: 's2', exact: true }).click();
-  await expect(page.getByText('00:03.00–00:08.00', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '镜头 02', exact: true }).click();
+  await expect(page.getByText('3.00–8.00 秒', { exact: true })).toBeVisible();
   const redrawn = path.join(root, 'redrawn-f01.mp4');
   fs.writeFileSync(redrawn, await responseBytes(await preview.getAttribute('src')));
   assert.ok(tone(redrawn, 7.96, 770) > 250 && tone(redrawn, 7.96, 330) < 20, '整条重抽采用新的整条声音');
@@ -855,6 +892,7 @@ try {
     fs.mkdirSync(output, { recursive: true });
     await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true }).catch(() => {});
   }
+  if (page) console.error('验收页面', new URL(page.url()).pathname, (await page.locator('body').innerText().catch(() => '')).slice(-1000));
   const databaseFile = path.join(root, 'data', 'workbench.db');
   if (fs.existsSync(databaseFile)) {
     const diagnostics = new Database(databaseFile, { readonly: true });
