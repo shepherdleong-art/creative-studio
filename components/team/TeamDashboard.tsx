@@ -234,7 +234,10 @@ function EmployeeWorkbench({
             const content = <>
               <Icon name={entry.icon} size={18} className="flex-none text-accent" />
               <span className="min-w-0">
-                <strong className="block text-ink">{entry.name}</strong>
+                <span className="flex items-center gap-2">
+                  <strong className="text-ink">{entry.name}</strong>
+                  {entry.badge && <Tag>{entry.badge}</Tag>}
+                </span>
                 <small className="block text-label text-ink-secondary">{entry.text}</small>
               </span>
             </>;

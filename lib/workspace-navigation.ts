@@ -13,12 +13,13 @@ export type WorkspaceRole = 'employee' | 'admin';
 
 export const WORKSPACE_PROJECT_CREATE_ENTRIES = {
   complex_product: { name: '常规项目', text: '场景、分镜到成片', icon: 'film', href: '/projects/new' },
-  one_click_film: { name: '一键成片', text: '从素材到成片一次做完', icon: 'grid', href: '/one-click-film/new' },
+  one_click_film: { name: '一键成片', badge: 'Beta', text: '从素材到成片一次做完', icon: 'grid', href: '/one-click-film/new' },
 } as const;
 
 /** 首页新建入口；尚未接入的入口只显示开发中提示。 */
 export const WORKSPACE_CREATE_ENTRIES: ReadonlyArray<{
   name: string;
+  badge?: string;
   text: string;
   icon: WorkspaceNavIcon | 'film';
   href?: string;

@@ -235,6 +235,7 @@ async function runEmployeePages(engineName, employee, project, oneClickProject) 
         assert.ok(home.sectionTitles.includes(title), `首页必须有「${title}」区块，实际 ${home.sectionTitles.join('/')}`);
       }
       assert.equal(home.projectCount >= 1, true, '「接着做」必须显示刚才建好的项目');
+      await page.getByRole('link', { name: /一键成片 Beta/ }).getByText('Beta', { exact: true }).waitFor();
       const projectCards = page.getByTestId('dashboard-project');
       const regularCard = projectCards.filter({ hasText: project.name });
       const oneClickCard = projectCards.filter({ hasText: oneClickProject.name });
