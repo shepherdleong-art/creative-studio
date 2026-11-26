@@ -71,9 +71,9 @@ export function resolveTemplateHueMode(templateDir: string): 'any' | 'warm' {
 }
 
 /** 从封面帧图片提取深浅色对。算法与 package-video.mjs §11 逐行对齐，改动必须双侧同步并回归四条对照。 */
-export async function extractPackagingPalette(imageAbsolutePath: string, hueMode: 'any' | 'warm'): Promise<PackagingPalette> {
+export async function extractPackagingPalette(image: string | Buffer, hueMode: 'any' | 'warm'): Promise<PackagingPalette> {
   try {
-    const { data, info } = await sharp(imageAbsolutePath)
+    const { data, info } = await sharp(image)
       .resize(SAMPLE, SAMPLE, { fit: 'fill' })
       .raw()
       .toBuffer({ resolveWithObject: true });

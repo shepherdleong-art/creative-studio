@@ -21,6 +21,9 @@ import { bodyFrame, filmAudioSignature, filmStoragePath, playableFilmBody, readF
 import { extractFilmPackagingPoints, listPackaging, packagingEligibility, type PackagingRecord, type TextCue } from './packaging.ts';
 import { filmCaptionSvg, isUneditedFilmPointSticker, resolveFilmSubtitleStyle, packagingOverlayConfig, splitTimedSubtitle, syncFilmPointStickers, STICKERS, type Position, type StickerCue } from './packaging-edit.ts';
 import { OneClickFilmError } from './errors.ts';
+import { resolveFilmCoverMedia } from './cover-media.ts';
+import { writeFilmCover } from './cover-render.ts';
+import { resolveFilmCoverImagePath } from './cover-source.ts';
 import type { OneClickFilmRun } from './store.ts';
 
 const pending = new Map<string, Promise<void>>();
@@ -248,22 +251,30 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     const overlay = packagingOverlayConfig(record);
     const stickers = record.options.stickers?.length
       ? await writeStickerFile(work, record.options.stickers, offset, body.frames / FINAL_EDIT_FPS) : '';
-    const video = [introFrames ? `tpad=start=${introFrames}:start_mode=clone` : 'null',
+    const cover = resolveFilmCoverMedia(record.options.coverMedia, body);
+    const coverPath = path.join(work, 'cover.jpg');
+    if (introFrames) {
+      const imagePath = 'assetId' in cover ? resolveFilmCoverImagePath(db, run, body, cover) : undefined;
+      await writeFilmCover({ bodyPath: bodyFile, cover, imagePath, jpgPath: coverPath });
+    }
+    const intro = introFrames
+      ? `[1:v]trim=end_frame=${introFrames},format=yuv420p,setsar=1,setpts=PTS-STARTPTS[intro];[intro][0:v]concat=n=2:v=1:a=0[base];`
+      : '';
+    const video = [introFrames ? '[base]null' : '[0:v]null',
       ...(stickers ? [`subtitles=filename='${stickers}'`] : [])].join(',');
     const audio = [`[0:a]aresample=48000,adelay=${Math.round(offset * 48000)}S:all=1[a0]`];
-    if (bgm) audio.push(`[1:a]aresample=48000,volume=${record.options.bgmVolume / 100},atrim=duration=${totalSec.toFixed(8)}[music]`,
+    if (bgm) audio.push(`[${introFrames ? 2 : 1}:a]aresample=48000,volume=${record.options.bgmVolume / 100},atrim=duration=${totalSec.toFixed(8)}[music]`,
       '[a0][music]amix=inputs=2:duration=first:normalize=0[audio]');
     const videoPath = path.join(work, 'final.mp4');
     await runFfmpeg([
       '-y', '-filter_complex_threads', '1', '-i', bodyFile,
+      ...(introFrames ? ['-loop', '1', '-framerate', String(FINAL_EDIT_FPS), '-i', coverPath] : []),
       ...(bgm ? ['-stream_loop', String(bgmStreamLoopCount(bgm.durationUs / 1e6, totalSec)), '-i', filmStoragePath(bgm.relativePath)] : []),
-      '-filter_complex', `[0:v]${video}[video];${audio.join(';')}`, '-map', '[video]', '-map', bgm ? '[audio]' : '[a0]',
+      '-filter_complex', `${intro}${video}[video];${audio.join(';')}`, '-map', '[video]', '-map', bgm ? '[audio]' : '[a0]',
       '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', String(FINAL_EDIT_FPS),
       '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', videoPath,
     ], { timeoutMs: 180_000 });
     if (overlay.enabled) {
-      const coverPath = path.join(work, 'cover.jpg');
-      if (record.options.cover) await runFfmpeg(['-y', '-i', bodyFile, '-frames:v', '1', '-update', '1', coverPath]);
       await resolveRenderFonts(overlay);
       await renderVideoPackaging({
         videoPath, coverPath, totalSec, staticCover: true, coverEnabled: record.options.cover,
@@ -285,11 +296,11 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
       }
       const updated = db.prepare(`
         UPDATE one_click_film_packaging SET status='ready', relativePath=?, sourceSignature=?, audioSignature=?, subtitleCuesJson=?,
-          title=?, pointCuesJson=?, optionsJson=json_set(optionsJson, '$.captionRenderer', 'single-line'),
+          title=?, pointCuesJson=?, optionsJson=json_set(optionsJson, '$.captionRenderer', 'single-line', '$.renderedCoverMedia', json(?)),
           errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?
       `).run(relative, body.signature, useSubtitles && refreshSubtitles ? audioSignature : previousAudioSignature,
         JSON.stringify(useSubtitles ? subtitle : record.subtitleCues), record.title, JSON.stringify(record.pointCues),
-        record.id, record.revision);
+        JSON.stringify(cover), record.id, record.revision);
       if (!updated.changes) throw new Error('已保存了更新的包装版本。');
       registerManagedFile({ absolutePath: finalName, mimeType: 'video/mp4',
         references: [{ resourceType: 'project', resourceId: run.projectId, role: 'derivative' }] });

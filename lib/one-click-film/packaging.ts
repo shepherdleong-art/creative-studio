@@ -6,6 +6,8 @@ import { OneClickFilmError } from './errors.ts';
 import { listEntries, type OneClickFilmRun } from './store.ts';
 import { FINAL_EDIT_FPS } from '../media-core/render-contract.ts';
 import { filmAudioSignature, readFilmBody } from './composition.ts';
+import { parseFilmCoverMedia, resolveFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
+import { validateFilmCoverSelection } from './cover-source.ts';
 import { videoJobFileUrl } from './generation.ts';
 import { cleanSellingPoint, parsePackagingConfig, sanitizePackagingLayouts, type FinalEditPackagingConfig, type PackagingLayouts, type PackagingVars } from '../media-core/packaging-vars.ts';
 import { parsePosition, STICKERS, splitFilmCoverTitle, splitSubtitleCues, stickersForFilmPoints, type Position, type StickerCue } from './packaging-edit.ts';
@@ -32,6 +34,7 @@ export interface PackagingOptions extends Pick<FinalEditPackagingConfig, 'titleF
   subtitleStyle?: TextStyle;
   template: PackagingTemplateId;
   cover: boolean;
+  coverMedia?: FilmCoverMedia;
   subtitles: boolean;
   decoration: boolean;
   bgm: boolean;
@@ -81,7 +84,7 @@ export function listPackagingPreviewSources(db: Database.Database, run: OneClick
     const url = videoJobFileUrl(first?.file ?? body.originalPath);
     if (!url) return [];
     const startSec = first ? first.trim / FINAL_EDIT_FPS : 0;
-    return [{ entryCode, url, startSec }];
+    return [{ entryCode, url, startSec, signature: body.signature }];
   });
 }
 
@@ -119,6 +122,7 @@ export function parsePackagingOptions(value: unknown): PackagingOptions {
   return {
     template,
     cover: raw.cover !== false,
+    coverMedia: parseFilmCoverMedia(raw.coverMedia),
     subtitles: raw.subtitles !== false,
     decoration: raw.decoration !== false,
     bgm: raw.bgm !== false,
@@ -335,7 +339,8 @@ export function preparePackaging(db: Database.Database, input: {
         errorMessage = NULL, updatedAt = excluded.updatedAt
     `).run(
       uuidv4(), input.run.id, entry.id, entry.code, options.template,
-      JSON.stringify({ ...options, titleFont: existing?.options.titleFont, subtitleFont: existing?.options.subtitleFont,
+      JSON.stringify({ ...options, coverMedia: existing?.options.coverMedia,
+        titleFont: existing?.options.titleFont, subtitleFont: existing?.options.subtitleFont,
         pointFont: existing?.options.pointFont, subtitleStyle: existing?.options.subtitleStyle, layouts: existing?.options.layouts,
         coverText: { ...existing?.options.coverText, subtitle: existing?.options.coverText?.subtitle ?? fallbackTitle.subtitle },
         stickers: existing?.options.stickers, subtitlePosition: existing?.options.subtitlePosition,
@@ -381,6 +386,11 @@ export function updatePackagingDraft(db: Database.Database, input: {
   }
   if (typeof input.bgmId === 'string') options.bgmId = input.bgmId || undefined;
   const body = readFilmBody(db, input.run, input.entryCode);
+  if ('coverMedia' in changes && changes.coverMedia != null) {
+    if (!body) throw new OneClickFilmError('invalid_input', '还没有生成原片');
+    options.coverMedia = validateFilmCoverSelection(db, input.run, body, changes.coverMedia);
+    if (options.coverMedia?.kind === 'video_frame') options.coverMedia = resolveFilmCoverMedia(options.coverMedia, body);
+  }
   const durationSec = body ? body.frames / FINAL_EDIT_FPS : 15;
   if ('assetStickers' in changes) {
     try {
@@ -406,7 +416,7 @@ export function updatePackagingDraft(db: Database.Database, input: {
   };
   const current = db.prepare(`SELECT subtitleCuesJson, pointCuesJson, title FROM one_click_film_packaging WHERE id = ?`)
     .get(row.id) as { subtitleCuesJson: string; pointCuesJson: string; title: string };
-  db.prepare(`
+  const saved = db.prepare(`
     UPDATE one_click_film_packaging
     SET title = ?, template = ?, optionsJson = ?, subtitleCuesJson = ?, pointCuesJson = ?, audioSignature = ?,
         revision = revision + 1, status = 'pending', errorMessage=NULL, updatedAt = ?
@@ -419,6 +429,7 @@ export function updatePackagingDraft(db: Database.Database, input: {
     input.subtitleCues && body ? filmAudioSignature(body) : row.audioSignature,
     new Date().toISOString(), row.id, row.revision,
   );
+  if (!saved.changes) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开后再保存', 409);
   return listPackaging(db, input.run);
 }
 

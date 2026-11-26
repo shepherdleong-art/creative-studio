@@ -767,6 +767,20 @@
 }
 .draftCanvas video { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .draftCanvas video { object-fit: contain; }
+.draftCoverImage { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.filmCoverPanel { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--color-hairline); border-radius: var(--radius-control); }
+.filmCoverSummary { display: flex; align-items: center; gap: 8px; }
+.filmCoverThumb { flex: none; display: grid; place-items: center; width: 42px; height: 56px; overflow: hidden;
+  border-radius: var(--radius-control); background: var(--color-preview); color: var(--color-ink-secondary); }
+.filmCoverThumb img { width: 100%; height: 100%; object-fit: contain; }
+.filmCoverSource { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.filmCoverShots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.filmCoverShot { display: grid; justify-items: center; gap: 2px; min-width: 0; padding: 3px;
+  border: 1px solid var(--color-hairline); border-radius: var(--radius-control); cursor: pointer;
+  background: var(--color-card); color: var(--color-ink); font-size: var(--text-label); }
+.filmCoverShot[aria-pressed='true'] { border-color: var(--color-accent); color: var(--color-accent); }
+.filmCoverShot:disabled { cursor: default; }
+.filmCoverShot img { display: block; width: 100%; height: 50px; object-fit: cover; border-radius: var(--radius-control); }
 .previewSticker {
   position: absolute;
   border: 0;

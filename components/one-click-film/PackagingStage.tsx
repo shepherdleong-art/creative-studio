@@ -20,7 +20,7 @@ interface ExportRecord {
   checksum: string;
 }
 
-type PreviewSource = { entryCode: string; url: string; startSec: number };
+type PreviewSource = { entryCode: string; url: string; startSec: number; signature: string };
 type ResponseBody = {
   packaging?: PackagingRecord[];
   subtitleWarning?: string;
@@ -41,21 +41,24 @@ function errorSummary(message: string) {
   return message;
 }
 
-function FilmCover({ url, startSec, label, disabled, onOpen }: {
+function FilmCover({ url, coverUrl, startSec, label, disabled, onOpen }: {
   url?: string;
+  coverUrl?: string;
   startSec: number;
   label: string;
   disabled: boolean;
   onOpen: () => void;
 }) {
-  const at = Math.round((startSec + 1 / 12) * 1e6);
-  const cover = useShotThumbnails(url, String(at))(at);
+  const [failedCover, setFailedCover] = useState('');
+  const at = Math.round((startSec + 0.001) * 1e6);
+  const thumbnail = useShotThumbnails(coverUrl ? undefined : url, String(at))(at);
+  const cover = coverUrl && coverUrl !== failedCover ? coverUrl : thumbnail;
   return <button type="button" className={`${styles.packagingMedia} ${styles.staticFilmCover}`} aria-label={label}
     disabled={disabled} onClick={onOpen}>
     {cover ? (
       // eslint-disable-next-line @next/next/no-img-element -- 从实际成片提取的本地封面
-      <img src={cover} alt="" />
-    ) : <span><Icon name="image" size={24} />{url ? '封面加载中' : '暂无视频'}</span>}
+      <img src={cover} alt="" loading="lazy" onError={() => setFailedCover(cover)} />
+    ) : <span><Icon name="image" size={24} />{failedCover ? '封面无法加载' : url ? '封面加载中' : '暂无视频'}</span>}
   </button>;
 }
 
@@ -93,7 +96,9 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
   const [media, setMedia] = useState<PackagingMedia | null>(null);
   const [initialShot, setInitialShot] = useState<string>();
   const [confirm, setConfirm] = useState(false);
+  const [discard, setDiscard] = useState(false);
   const closeConfirm = useCallback(() => setConfirm(false), []);
+  const closeDiscard = useCallback(() => setDiscard(false), []);
   const exportList = useRef<HTMLDivElement>(null);
   const defaults = { template, cover, subtitles, decoration, bgm, titleMode, title, bgmId };
 
@@ -207,7 +212,8 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     const result = await post('packaging', {
       action: 'edit', entryCode: record.entryCode, revision: record.revision, title: record.title,
       template: record.template, options: { ...record.options, titleFont: record.options.titleFont ?? null,
-        subtitleFont: record.options.subtitleFont ?? null, pointFont: record.options.pointFont ?? null, bgmId: record.options.bgmId ?? null }, pointCues: record.pointCues,
+        subtitleFont: record.options.subtitleFont ?? null, pointFont: record.options.pointFont ?? null, bgmId: record.options.bgmId ?? null,
+        coverMedia: record.options.coverMedia ?? null }, pointCues: record.pointCues,
       subtitleCues: changedSubtitles ? record.subtitleCues : undefined,
     });
     const updated = result.packaging?.find((item) => item.entryCode === record.entryCode);
@@ -220,7 +226,22 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     return updated;
   };
 
-  const finishEditing = async (action: 'back' | 'save' | 'select' | 'approve' | 'sound') => {
+  const leaveEditor = () => {
+    setDiscard(false);
+    setDraft(null);
+    setMedia(null);
+    setBaseline(null);
+    setError('');
+    setNotice('');
+    return load();
+  };
+
+  const returnToCards = () => {
+    if (draft && baseline && draftValues(draft) !== draftValues(baseline)) setDiscard(true);
+    else void leaveEditor();
+  };
+
+  const finishEditing = async (action: 'save' | 'select' | 'approve' | 'sound') => {
     if (!draft || working) return;
     setError('');
     setNotice('');
@@ -239,12 +260,8 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
         if (!record.canExport) throw new Error(record.reason || '请先完成审片与复核');
         setSelected((current) => ({ ...current, [record.entryCode]: record.revision }));
       }
-      if (action !== 'save') {
-        setDraft(null);
-        setMedia(null);
-        setBaseline(null);
-        await load();
-      } else setNotice('已保存草稿。');
+      if (action !== 'save') await leaveEditor();
+      else setNotice('已保存草稿。');
     } catch (cause) { setError(message(cause)); }
     finally { setWorking(''); }
   };
@@ -310,7 +327,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
   const busy = Boolean(working);
   if (draft && media) return <div className={styles.draftWorkspace}>
     <div className={styles.draftToolbar}>
-      <ToolbarButton icon="chevron-left" disabled={busy} onClick={() => void finishEditing('back')}>返回成片卡片</ToolbarButton>
+      <ToolbarButton icon="chevron-left" disabled={busy} onClick={returnToCards}>返回成片卡片</ToolbarButton>
       <b>{draft.entryCode} · {draft.title}</b>
       <ToolbarButton disabled={busy} onClick={() => void finishEditing('save')}>{working === 'save' ? '保存中…' : '保存草稿'}</ToolbarButton>
       <ToolbarButton variant="primary" disabled={busy || media.review.approved} onClick={() => void finishEditing('approve')}
@@ -324,6 +341,11 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     {!draft.canExport ? <p className={styles.hintWarn}>{draft.reason || '待审片复核'}</p> : null}
     {notice ? <p className={styles.hint} role="status">{notice}</p> : null}
     {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
+    <Dialog open={discard} title="放弃未保存的修改？" onClose={closeDiscard}
+      footer={<div className={styles.inlineActions}>
+        <ToolbarButton onClick={closeDiscard}>继续编辑</ToolbarButton>
+        <ToolbarButton variant="primary" onClick={() => void leaveEditor()}>放弃修改</ToolbarButton>
+      </div>} />
     <PackagingDraftEditor key={media.review.jobId} projectId={state.project.id} images={state.images}
       entry={state.entries.find(entry => entry.code === draft.entryCode)!} initialShot={initialShot}
       onRefresh={refreshReview} onAdjustSound={() => void finishEditing('sound')}
@@ -372,8 +394,10 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
           const record = records.find((item) => item.entryCode === entry.code);
           const preview = previews.find((item) => item.entryCode === entry.code);
           const failed = record?.status === 'failed';
+          const coverUrl = preview && record && (record.options.cover || record.options.coverMedia)
+            ? `${base}/packaging?${new URLSearchParams({ cover: entry.code, revision: String(record.revision), signature: preview.signature })}` : undefined;
           return <article key={entry.id} className={styles.packagingCard}>
-            <FilmCover url={record?.videoUrl || preview?.url} startSec={record?.videoUrl ? 0 : preview?.startSec ?? 0}
+            <FilmCover url={record?.videoUrl || preview?.url} coverUrl={coverUrl} startSec={record?.videoUrl ? 0 : preview?.startSec ?? 0}
               label={`打开 ${entry.code} 预览与编辑`} disabled={busy || !preview} onOpen={() => void openEditor(entry.code)} />
             <div className={styles.packagingHead}>
               <b>{entry.code}</b>

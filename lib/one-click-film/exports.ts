@@ -8,6 +8,7 @@ import { OneClickFilmError } from './errors.ts';
 import type { OneClickFilmRun } from './store.ts';
 import { listPackaging, type PackagingRecord } from './packaging.ts';
 import { filmStoragePath, readFilmBody } from './composition.ts';
+import { parseFilmCoverMedia, resolveFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
 import { registerManagedFile } from '../media-core/access-context.ts';
 
 /**
@@ -31,6 +32,8 @@ export interface ExportRecord {
     packagingRevision: number;
     soundMode: string;
     template: string;
+    coverEnabled?: boolean;
+    coverMedia?: FilmCoverMedia;
   };
 }
 
@@ -123,9 +126,10 @@ export function exportEntries(db: Database.Database, input: {
     if (!target.eligible) continue;
     const record = packaging.get(target.entryCode)!;
     const body = readFilmBody(db, input.run, target.entryCode);
-    const source = db.prepare('SELECT relativePath FROM one_click_film_packaging WHERE id=? AND revision=? AND status=\'ready\'')
-      .pluck().get(record.id, record.revision);
-    const absoluteSource = typeof source === 'string' && source ? filmStoragePath(source) : null;
+    const source = db.prepare(`SELECT relativePath, json_extract(optionsJson, '$.renderedCoverMedia') AS renderedCoverMedia
+      FROM one_click_film_packaging WHERE id=? AND revision=? AND status='ready'`)
+      .get(record.id, record.revision) as { relativePath: string; renderedCoverMedia: string | null } | undefined;
+    const absoluteSource = source?.relativePath ? filmStoragePath(source.relativePath) : null;
     if (!body || !absoluteSource || !fs.existsSync(absoluteSource)) {
       failed.push({ entryCode: target.entryCode, reason: '成片文件不存在' });
       continue;
@@ -156,6 +160,9 @@ export function exportEntries(db: Database.Database, input: {
       packagingRevision: record.revision,
       soundMode: body.snapshot.soundMode ?? 'native',
       template: record.template,
+      coverEnabled: record.options.cover,
+      coverMedia: (source?.renderedCoverMedia && parseFilmCoverMedia(JSON.parse(source.renderedCoverMedia)))
+        || resolveFilmCoverMedia(record.options.coverMedia, body),
     });
     const createdAt = new Date().toISOString();
     try {

@@ -36,11 +36,19 @@ let serverLog = '';
 let startupLog = '';
 let stage = '启动';
 
-function listen(server) {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
-  });
+async function listen(server) {
+  for (;;) {
+    const port = await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        resolve(server.address().port);
+      });
+    });
+    // Windows can allocate 10080, which both Fetch and browsers disallow for HTTP.
+    if (port !== 10080) return port;
+    await new Promise(resolve => server.close(resolve));
+  }
 }
 
 function ff(args) { return native(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...args]); }
@@ -601,10 +609,11 @@ try {
   const cutUs = Math.round((draggedFrame + 1 - 20) * 1e6 / 24);
   await expect.poll(() => preview.evaluate((video) => video.currentTime)).toBeCloseTo(cutUs / 1e6, 2);
   const timeline = page.getByRole('region', { name: '审片时间轴' });
-  await expect.poll(() => timeline.locator('button img').evaluateAll((images) =>
+  const pictureThumbnails = timeline.getByRole('group', { name: '主画面', exact: true }).locator('button img');
+  await expect.poll(() => pictureThumbnails.evaluateAll((images) =>
     images.filter((image) => image.naturalWidth > 0).length)).toBe(3);
   const legacyThumbnail = await secondShot.locator('img').getAttribute('src');
-  assert.equal(new Set(await timeline.locator('button img').evaluateAll((images) => images.map((image) => image.src))).size, 3);
+  assert.equal(new Set(await pictureThumbnails.evaluateAll((images) => images.map((image) => image.src))).size, 3);
   assert.ok((await secondShot.boundingBox()).height >= 60, '画面轨保留可读高度');
   assert.ok((await timeline.locator('[class*="draftPlayhead"] i').boundingBox()).height >= 90, '播放头跨越画面和声音轨');
   await assertReachable(split);
@@ -762,6 +771,35 @@ try {
 
   await openPackaging('F02');
   await expect(page.getByRole('region', { name: '审片时间轴', exact: true })).toBeVisible();
+  const coverPanel = page.getByRole('region', { name: '封面底图' });
+  const coverTrack = page.getByRole('group', { name: '花字包装', exact: true });
+  const coverLayer = page.getByAltText('片头封面底图');
+  const framePicker = page.getByRole('group', { name: '本片画面', exact: true });
+  const overlayFrame = page.locator('iframe[title="包装版式编辑"]');
+  const getPalette = async () => /window\.__palette=(\{[^}]+\})/.exec(await overlayFrame.getAttribute('srcdoc') ?? '')?.[1];
+  await expect(coverLayer).toBeVisible();
+  const firstCover = await coverLayer.getAttribute('src');
+  const minimalPalette = await getPalette();
+  await page.getByRole('radio', { name: /花字种草/ }).click();
+  await expect.poll(getPalette).not.toBe(minimalPalette);
+  const firstPalette = await getPalette();
+  await coverTrack.getByRole('button', { name: '封面', exact: true }).click();
+  await expect(framePicker.getByRole('button')).toHaveCount(3);
+  await framePicker.getByRole('button', { name: '镜头 02', exact: true }).click();
+  const frameSlider = coverPanel.getByRole('slider', { name: '封面帧' });
+  const previousFrame = Number(await frameSlider.inputValue());
+  await frameSlider.press('ArrowRight');
+  await expect(frameSlider).toHaveValue(String(previousFrame + 1));
+  await expect(coverLayer).not.toHaveAttribute('src', firstCover);
+  await expect.poll(getPalette).not.toBe(firstPalette);
+  await coverPanel.getByRole('button', { name: '恢复默认封面' }).click();
+  await expect(coverLayer).toHaveAttribute('src', firstCover);
+  await framePicker.getByRole('button', { name: '镜头 03', exact: true }).click();
+  await page.getByRole('button', { name: '返回成片卡片' }).click();
+  await page.getByRole('dialog', { name: '放弃未保存的修改？' }).getByRole('button', { name: '放弃修改' }).click();
+  assert.equal((await readPackaging()).find((item) => item.entryCode === 'F02').options.coverMedia, undefined);
+  await openPackaging('F02');
+  await expect(coverTrack).toBeVisible();
   assert.deepEqual(await page.locator('[data-packaging-track]').evaluateAll((rows) =>
     rows.map((row) => row.dataset.packagingTrack)), ['subtitle', 'packaging', 'sticker', 'picture', 'voice', 'music']);
   await page.getByRole('button', { name: '安全区', exact: true }).click();
@@ -800,6 +838,15 @@ try {
   await expect(subtitleSvg.locator('text').last()).toHaveText('这是校对后的旁白。');
   assert.equal(await subtitleSvg.locator('tspan').count(), 0);
   await page.getByRole('tab', { name: '花字包装', exact: true }).click();
+  await coverPanel.getByRole('button', { name: '更换封面' }).click();
+  await page.getByRole('slider', { name: '审片时间轴播放头' }).fill('200');
+  await expect(coverLayer).toHaveCount(0);
+  await page.getByRole('button', { name: '播放', exact: true }).click();
+  await expect.poll(() => page.getByLabel('F02 编辑预览').evaluate(video => video.currentTime)).toBeGreaterThan(7.5);
+  await coverPanel.getByRole('button', { name: '取当前播放画面' }).click();
+  await expect(coverLayer).toBeVisible();
+  await expect(coverLayer).not.toHaveAttribute('src', firstCover);
+  const chosenCover = await coverLayer.getAttribute('src');
   const coverTitle = page.frameLocator('iframe[title="包装版式编辑"]').locator('[data-point-id="cover:title"]');
   await expect(page.getByRole('radiogroup', { name: '包装模板' })).toBeVisible();
   const titleFont = page.getByRole('combobox', { name: '主标题字体', exact: true });
@@ -821,6 +868,11 @@ try {
   await page.getByRole('button', { name: '保存草稿' }).click();
   await expect(page.getByText('已保存草稿。')).toBeVisible();
   const f02Draft = (await readPackaging()).find((item) => item.entryCode === 'F02');
+  assert.equal(f02Draft.options.coverMedia.kind, 'video_frame');
+  assert.ok(f02Draft.options.coverMedia.frame >= 144 && f02Draft.options.coverMedia.frame < 216);
+  await api.json(member, `/api/one-click-film/${projectId}/packaging`, 'POST', {
+    action: 'edit', entryCode: 'F02', revision: f02Draft.revision - 1, options: { coverMedia: null },
+  }, 409);
   assert.equal(f02Draft.options.subtitleStyle.fontSizePx, 62);
   assert.equal(f02Draft.options.titleFont.file, fontId);
   assert.ok(f02Draft.options.subtitlePosition.y < 82);
@@ -833,6 +885,11 @@ try {
   if (output) await page.screenshot({ path: path.join(output, 'ui-packaging-draft.png'), animations: 'disabled' });
   await assertReachable(page.getByRole('button', { name: '选入导出' }));
   await page.getByRole('button', { name: '选入导出' }).click();
+  const savedCover = page.getByRole('button', { name: '打开 F02 预览与编辑' }).locator('img');
+  await expect(savedCover).toHaveAttribute('src', /\/packaging\?cover=F02/);
+  const savedCoverUrl = await savedCover.getAttribute('src');
+  assert.deepEqual(await responseBytes(savedCoverUrl), Buffer.from(chosenCover.split(',')[1], 'base64'));
+  assert.ok([403, 404].includes((await api.raw(stranger, savedCoverUrl)).status), '成片封面必须拒绝无权限员工');
   await openPackaging('F01');
   await page.getByRole('button', { name: '选入导出' }).click();
   assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, true);
@@ -878,6 +935,14 @@ try {
     assert.ok(streams.some((stream) => stream.codec_type === 'audio'));
     assertContinuousAudio(file, 20 / 24, true);
     const expectedPackaging = delivery.entryCode === 'F02' ? f02Draft : autoCaption;
+    if (delivery.entryCode === 'F02') {
+      const pixels = pixelFrames(file);
+      const expectedCover = pixelFrames(media.assets.get('hd-candidate.mp4')).subarray(24 * 3, 25 * 3);
+      const expectedBody = pixelFrames(media.assets.get('hd.mp4')).subarray(0, 3);
+      for (let frame = 0; frame < 20; frame++) assert.ok(pixelsNear(pixels.subarray(frame * 3, frame * 3 + 3), expectedCover, 14), `封面第 ${frame} 帧来自采用的镜头`);
+      assert.ok(pixelsNear(pixels.subarray(60, 63), expectedBody, 14), '第 20 帧回到正文第 0 帧');
+      assert.deepEqual(delivery.versions.coverMedia, f02Draft.options.coverMedia);
+    }
     const visual = assertPackagedVisuals(file, delivery.entryCode, expectedPackaging.pointCues[0]);
     checked.push({ entry: delivery.entryCode, filename: path.basename(file), fps: video.avg_frame_rate,
       frames: Number(video.nb_read_frames), sha256: delivery.checksum, ...visual });
@@ -886,13 +951,26 @@ try {
   const oldF02 = deliveries.find((delivery) => delivery.entryCode === 'F02');
   await openPackaging('F02');
   await page.getByLabel('F02 标题').fill('F02 第二版交付');
+  await page.getByRole('checkbox', { name: '封面', exact: true }).uncheck();
+  await expect(coverLayer).toHaveCount(0);
   await page.getByRole('tab', { name: '字幕', exact: true }).click();
   await page.getByLabel('显示口播字幕').uncheck();
   await page.getByRole('button', { name: '选入导出' }).click();
   await confirmExport();
   await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(3);
   assert.equal(digest(await responseBytes(oldF02.url)), oldF02.checksum);
-  assert.notEqual((await getExports()).find((item) => item.title === 'F02 第二版交付').checksum, oldF02.checksum);
+  const withoutCover = (await getExports()).find((item) => item.title === 'F02 第二版交付');
+  assert.notEqual(withoutCover.checksum, oldF02.checksum);
+  assert.equal(withoutCover.versions.coverEnabled, false);
+  assert.deepEqual(withoutCover.versions.coverMedia, oldF02.versions.coverMedia);
+  const noCoverFile = path.join(root, 'F02-no-cover.mp4');
+  fs.writeFileSync(noCoverFile, await responseBytes(withoutCover.url));
+  const noCoverStreams = metadata(noCoverFile).streams;
+  const noCoverVideo = noCoverStreams.find(stream => stream.codec_type === 'video');
+  assert.equal(noCoverVideo.avg_frame_rate, '24/1');
+  assert.equal(Number(noCoverVideo.nb_read_frames), 360);
+  assert.ok(noCoverStreams.some(stream => stream.codec_type === 'audio'));
+  assertContinuousAudio(noCoverFile, 0, true);
   const withoutCaptions = (await readPackaging()).find((item) => item.entryCode === 'F02');
   assert.equal(withoutCaptions.options.subtitles, false);
   assert.deepEqual(withoutCaptions.subtitleCues, f02Draft.subtitleCues, '关闭字幕导出仍保留已校对的字幕');

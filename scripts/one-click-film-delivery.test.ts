@@ -25,6 +25,17 @@ assert.deepEqual(filmTimeForBodyTime(0, true), { sec: 0.833, frame: 20 });
 assert.deepEqual(filmTimeForBodyTime(15, true), { sec: 15.833, frame: 380 });
 assert.deepEqual(filmTimeForBodyTime(15, false), { sec: 15, frame: 360 });
 
+assert.equal(parsePackagingOptions({ cover: true }).coverMedia, undefined, '旧草稿保留默认首帧来源');
+assert.deepEqual(parsePackagingOptions({ cover: false, coverMedia: {
+  kind: 'video_frame', frame: 97, shotId: 'shot-02', framing: { scale: 7, offsetX: -2, offsetY: 0.2 },
+} }).coverMedia, { kind: 'video_frame', frame: 97, shotId: 'shot-02', framing: { scale: 3, offsetX: -1, offsetY: 0.2 } });
+for (const coverMedia of [
+  { kind: 'auto_frame', sourceSignature: 'body-v2', frame: 72, shotId: 'shot-02' },
+  { kind: 'project_image', assetId: 'project-image-1' },
+  { kind: 'generated_image', assetId: 'generated-image-1' },
+]) assert.deepEqual(parsePackagingOptions({ coverMedia }).coverMedia, coverMedia);
+assert.equal(parsePackagingOptions({ coverMedia: { kind: 'video_frame', frame: 10.5 } }).coverMedia, undefined);
+
 // ── 字幕：不配音跳过；TTS 按实测音频时长对时 ──
 const nativeCues = buildSubtitleCues({ narration: '第一句。第二句。', soundMode: 'native', durationSec: 15 });
 assert.equal(nativeCues.length, 2);
@@ -136,6 +147,8 @@ const first = exportEntries(db, { run, all: true });
 assert.deepEqual(first.exported.map((item) => item.entryCode), ['F01']);
 assert.equal(first.exported[0]!.versions.packagingRevision, 2);
 assert.equal(first.exported[0]!.versions.soundMode, 'native');
+assert.equal(first.exported[0]!.versions.coverMedia?.kind, 'auto_frame');
+assert.equal(first.exported[0]!.versions.coverMedia?.kind === 'auto_frame' && first.exported[0]!.versions.coverMedia.frame, 0);
 const firstChecksum = first.exported[0]!.checksum;
 
 const repeat = exportEntries(db, { run, codes: ['F01'] });
@@ -143,14 +156,31 @@ assert.deepEqual(repeat.reused, ['F01'], '重复提交找回同一记录');
 assert.equal(repeat.exported[0]!.id, first.exported[0]!.id);
 assert.equal(repeat.exported[0]!.checksum, firstChecksum);
 
-// 改标题重新包装 → 新记录，旧记录仍可取回。
-updatePackagingDraft(db, { run, entryCode: 'F01', title: '新的标题' });
+// 选帧、关闭后重新打开、拒绝旧修订，重新导出时旧交付保持原封面。
+const chosen = { kind: 'video_frame', frame: 210, shotId: 'shot-03' } as const;
+const disabled = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 2, options: { cover: false, coverMedia: chosen } })[0]!;
+assert.equal(disabled.revision, 3);
+assert.equal(disabled.options.cover, false);
+assert.deepEqual(disabled.options.coverMedia, chosen);
+assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 2, options: { coverMedia: null } }), { status: 409 });
+const restored = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 3, options: { cover: true } })[0]!;
+assert.equal(restored.options.cover, true);
+assert.deepEqual(restored.options.coverMedia, chosen);
+assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 4,
+  options: { coverMedia: { kind: 'video_frame', frame: '210' } },
+}), { status: 400 });
 settleFixtureRender();
 const second = exportEntries(db, { run, codes: ['F01'] });
 assert.notEqual(second.exported[0]!.id, first.exported[0]!.id, '重新导出形成独立记录');
+assert.deepEqual(second.exported[0]!.versions.coverMedia, chosen);
 const all = listExports(db, run);
 assert.equal(all.length, 2);
 assert.ok(all.some((record) => record.checksum === firstChecksum), '旧交付文件摘要不变');
+assert.deepEqual(all.find((record) => record.id === first.exported[0]!.id)?.versions, first.exported[0]!.versions);
+const clamped = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 4,
+  options: { coverMedia: { kind: 'video_frame', frame: 1500 } },
+})[0]!;
+assert.deepEqual(clamped.options.coverMedia, { kind: 'video_frame', frame: 359 });
 
 // ── ZIP 清单只来自登记记录 ──
 const zipEntries = exportZipEntries(db, { run, ids: all.map((record) => record.id) });

@@ -5,6 +5,8 @@ import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render
 import { clamp, filmCaptionSvg, isUneditedFilmPointSticker, resolveFilmSubtitleStyle, splitFilmCoverTitle, syncFilmPointStickers, STICKERS, type Position } from '@/lib/one-click-film/packaging-edit';
 import { applyPackagingStickerEdit, createManualPackagingSticker, MAX_STICKER_INSTANCES, planStickerFramesAtPlayhead, STICKER_MIN_DURATION_FRAMES, type PackagingStickerEditPatch } from '@/lib/media-core/packaging-stickers';
 import type { PackagingOptions, PackagingRecord, TextCue } from '@/lib/one-click-film/packaging';
+import type { FilmCoverMedia } from '@/lib/one-click-film/cover-media';
+import { FilmCoverPanel } from './FilmCoverPanel';
 import { PackagingTimeline, type PackagingTrack, type TimelineClip } from './PackagingTimeline';
 import { useShotThumbnails } from './useShotThumbnails';
 import { ensureServerFontLoaded } from '@/components/system-fonts';
@@ -64,6 +66,8 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const [tab, setTab] = useState<Tab>(initial ? 'picture' : 'packaging');
   const [selected, setSelected] = useState('');
   const [overlay, setOverlay] = useState('');
+  const [coverImage, setCoverImage] = useState('');
+  const [coverExpanded, setCoverExpanded] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [coverField, setCoverField] = useState('title');
   const monitor = useRef<HTMLDivElement>(null);
@@ -76,6 +80,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const positionDrag = useRef<{ pointer: number; x: number; y: number; origin: Position; width: number; height: number } | null>(null);
   const captionText = useRef<HTMLTextAreaElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
+  const coverPanel = useRef<HTMLDivElement>(null);
   const pointInput = useRef<HTMLInputElement>(null);
   const dragSticker = useRef<StickerAssetChoice | null>(null);
   const pointRequest = useRef<AbortController | null>(null);
@@ -105,6 +110,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const overlayInput = JSON.stringify({
     action: 'preview', entryCode: draft.entryCode, title: draft.title, pointCues: draft.pointCues,
     options: { template: draft.template, cover: draft.options.cover, decoration: draft.options.decoration,
+      coverMedia: draft.options.coverMedia,
       titleFont: draft.options.titleFont, subtitleFont: draft.options.subtitleFont, pointFont: draft.options.pointFont,
       layouts: draft.options.layouts, coverText: draft.options.coverText,
       assetStickers: draft.options.assetStickers, stickerDefaults: draft.options.stickerDefaults },
@@ -116,16 +122,18 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
         const response = await fetch(`/api/one-click-film/${projectId}/packaging`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: overlayInput, signal: abort.signal,
         });
-        const payload = await response.json() as { html?: string; message?: string };
+        const payload = await response.json() as { html?: string; coverImage?: string; message?: string };
         if (!response.ok) throw new Error(payload.message || '包装图层准备失败');
+        if (abort.signal.aborted) return;
         setOverlay(payload.html ?? '');
+        setCoverImage(payload.coverImage ?? '');
         setPreviewError('');
       } catch (cause) {
         if (!abort.signal.aborted) setPreviewError(cause instanceof Error ? cause.message : String(cause));
       }
     }, 160);
     return () => { clearTimeout(timer); abort.abort(); };
-  }, [projectId, overlayInput]);
+  }, [projectId, media.signature, media.url, overlayInput]);
 
   const updateOptions = (patch: Partial<PackagingOptions>) =>
     onChange({ ...draft, options: { ...draft.options, ...patch } });
@@ -194,6 +202,18 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const stickers = draft.options.stickers ?? [];
   const assetStickers = draft.options.assetStickers ?? [];
   const bodyFrames = Math.round(media.durationSec * FINAL_EDIT_FPS);
+  const selectCover = (coverMedia?: FilmCoverMedia) => {
+    updateOptions({ coverMedia });
+    if (offset) seek(0);
+  };
+  const takeCurrentCover = () => {
+    if (time.current < offset) return;
+    const seconds = video.current?.currentTime ?? time.current - offset;
+    const frame = clamp(Math.floor(seconds * FINAL_EDIT_FPS + 1e-6), 0, bodyFrames - 1);
+    const atUs = Math.round(frame / FINAL_EDIT_FPS * 1e6);
+    const shotId = media.review.shots.find(shot => atUs >= shot.startUs && atUs < shot.endUs)?.id;
+    selectCover({ kind: 'video_frame', frame, shotId });
+  };
   const selectedSubtitle = draft.subtitleCues.find((cue) => selected === `subtitle:${cue.id}`);
   const selectedPoint = draft.pointCues.find((cue) => selected === `point:${cue.id}`);
   const selectedSticker = stickers.find((cue) => selected === `sticker:${cue.id}`);
@@ -232,7 +252,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const rows: PackagingTrack[] = [
     { kind: 'subtitle', label: '字幕', start: offset, clips: draft.options.subtitles ? draft.subtitleCues.map((cue) => cueClip(cue, 'subtitle')) : [] },
     { kind: 'packaging', label: '花字包装', start: offset, clips: [
-      ...(offset ? [{ id: 'cover', text: '封面', start: 0, end: offset }] : []),
+      ...(offset ? [{ id: 'cover', text: '封面', start: 0, end: offset, image: coverImage || undefined }] : []),
       ...(draft.options.decoration ? draft.pointCues.map((cue) => cueClip(cue, 'point')) : []),
     ] },
     { kind: 'sticker', label: '贴纸', start: offset, clips: [
@@ -328,6 +348,10 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
               element.currentTime = clamp(time.current - offset, 0, media.durationSec);
               if (element.videoWidth && element.videoHeight) setSize({ width: element.videoWidth, height: element.videoHeight });
             }} onError={() => setPreviewError('正文视频无法加载')} />
+          {offset > 0 && position < offset && coverImage ? (
+            // eslint-disable-next-line @next/next/no-img-element -- 草稿封面与服务器取色使用同一图片
+            <img className={styles.draftCoverImage} src={coverImage} alt="片头封面底图" />
+          ) : null}
           {stickers.filter((cue) => bodyTime >= cue.startSec && bodyTime < cue.endSec).map((cue) =>
             <button key={cue.id} type="button" className={styles.previewSticker} data-active={selected === `sticker:${cue.id}`}
               style={{ left: `${cue.x}%`, top: `${cue.y}%` }} aria-label={`移动${STICKERS[cue.kind].label}贴纸`}
@@ -413,6 +437,10 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
           setSelected(clip.id);
           if (kind === 'picture') setPickedShot(clip.id);
           if (kind === 'picture' || kind === 'subtitle' || kind === 'packaging' || kind === 'sticker' || kind === 'music') setTab(kind);
+          if (clip.id === 'cover') {
+            setCoverExpanded(true);
+            requestAnimationFrame(() => coverPanel.current?.scrollIntoView({ block: 'nearest' }));
+          }
           seek(clip.start);
         }}
         onRange={(kind, clip, range, at) => {
@@ -479,6 +507,11 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
         <div className={styles.inlineActions}>
           <label><input type="checkbox" checked={draft.options.cover} onChange={(event) => { seek(0); updateOptions({ cover: event.target.checked }); }} /> 封面</label>
           <label><input type="checkbox" checked={draft.options.decoration} onChange={(event) => updateOptions({ decoration: event.target.checked })} /> 花字</label>
+        </div>
+        <div ref={coverPanel}>
+          <FilmCoverPanel media={draft.options.coverMedia} frames={bodyFrames} signature={media.signature} shots={media.review.shots}
+            image={coverImage} thumbnail={thumbnail} expanded={coverExpanded} busy={busy} canTakeCurrent={position >= offset}
+            onSelect={selectCover} onTakeCurrent={takeCurrentCover} onToggle={() => setCoverExpanded(current => !current)} />
         </div>
         {selectedPoint ? <label className={styles.editRow}>当前花字<input ref={pointInput} className="input-field" maxLength={60}
           value={selectedPoint.text} onChange={(event) => onChange({ ...draft, options: { ...draft.options, pointCuesEdited: true }, pointCues: draft.pointCues.map((cue) =>

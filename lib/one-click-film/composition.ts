@@ -230,7 +230,11 @@ export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<st
 const pending = new Map<string, Promise<string>>();
 
 export async function getFilmPreview(db: Database.Database, run: OneClickFilmRun, body: FilmBody, highDefinition = false): Promise<string> {
-  if (!body.edits.length && !body.snapshot.narrationPath && !highDefinition) return videoJobFileUrl(body.originalPath)!;
+  return videoJobFileUrl(await getFilmPreviewPath(db, run, body, highDefinition))!;
+}
+
+export async function getFilmPreviewPath(db: Database.Database, run: OneClickFilmRun, body: FilmBody, highDefinition = false): Promise<string> {
+  if (!body.edits.length && !body.snapshot.narrationPath && !highDefinition) return body.originalPath;
   body = await playableFilmBody(body);
   const hd = highDefinition ? readyHdPaths(db, run, body) : undefined;
   const signature = createHash('sha256').update(JSON.stringify(['verified-frames-v1', body.signature, body.frames, hd ? [...hd] : null])).digest('hex');
@@ -250,7 +254,7 @@ export async function getFilmPreview(db: Database.Database, run: OneClickFilmRun
       }
       registerManagedFile({ absolutePath: output, mimeType: 'video/mp4',
         references: [{ resourceType: 'project', resourceId: run.projectId, role: 'derivative' }] });
-      return videoJobFileUrl(output)!;
+      return output;
     })().finally(() => pending.delete(output));
     pending.set(output, work);
   }

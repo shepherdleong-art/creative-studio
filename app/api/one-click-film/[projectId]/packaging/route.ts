@@ -16,10 +16,14 @@ import { validatePackagingStickers } from '@/lib/media-core/packaging-stickers';
 import { isExecutionDeferredError, isExecutionUnknownError } from '@/lib/media-core/execution/waiting';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { previewFilmCover } from '@/lib/one-click-film/cover-render';
+import { validateFilmCoverSelection } from '@/lib/one-click-film/cover-source';
+import { extractPackagingPalette, resolveTemplateHueMode } from '@/lib/media-core/packaging-palette';
+import { resolvePackagingDir, resolvePackagingTemplateDir } from '@/lib/media-core/packaging-runtime';
 
 /** 一键批量包装与包装后继续编辑。 */
 async function __teamRouteGET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -29,6 +33,14 @@ async function __teamRouteGET(
     const access = requireAccessContext();
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
     const run = getRunForProject(db, projectId);
+    const coverCode = request.nextUrl.searchParams.get('cover');
+    if (coverCode !== null) {
+      const saved = run && readFilmBody(db, run, coverCode);
+      if (!run || !saved) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      const record = listPackaging(db, run).find(item => item.entryCode === coverCode);
+      const cover = await previewFilmCover(db, run, await playableFilmBody(saved), record?.options.coverMedia);
+      return new NextResponse(new Uint8Array(cover), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' } });
+    }
     if (run) await syncGenerationStatus(db, run);
     return NextResponse.json({
       packaging: run ? listPackaging(db, run) : [],
@@ -57,6 +69,9 @@ async function __teamRoutePOST(
     const entryCode = String(body.entryCode ?? '');
 
     if (action === 'edit') {
+      if (typeof body.revision !== 'number' || !Number.isSafeInteger(body.revision) || body.revision < 1) {
+        throw new OneClickFilmError('invalid_input', '缺少有效的包装草稿修订号');
+      }
       updatePackagingDraft(db, {
           run,
           entryCode,
@@ -67,7 +82,7 @@ async function __teamRoutePOST(
           bgmVolume: typeof body.bgmVolume === 'number' ? body.bgmVolume : undefined,
           bgmId: typeof body.bgmId === 'string' ? body.bgmId : undefined,
           options: body.options,
-          expectedRevision: typeof body.revision === 'number' ? body.revision : undefined,
+          expectedRevision: body.revision,
       });
       return NextResponse.json({ packaging: listPackaging(db, run) });
     }
@@ -92,19 +107,27 @@ async function __teamRoutePOST(
       const durationSec = film.frames / FINAL_EDIT_FPS;
       if (action === 'preview') {
         const options = parsePackagingOptions(body.options);
+        if (body.options && typeof body.options === 'object' && 'coverMedia' in body.options) {
+          options.coverMedia = validateFilmCoverSelection(db, run, film, body.options.coverMedia);
+        }
         if (body.options && typeof body.options === 'object' && 'assetStickers' in body.options) {
           try { options.assetStickers = validatePackagingStickers(body.options.assetStickers, film.frames); }
           catch (error) { throw new OneClickFilmError('invalid_input', error instanceof Error ? error.message : '贴纸数据无效'); }
         }
         const title = typeof body.title === 'string' ? body.title.slice(0, 60) : '';
         const config = packagingOverlayConfig({ options, template: options.template, title, pointCues: sanitizePointCues(body.pointCues) ?? [] });
-        if (!config.enabled) return NextResponse.json({ html: '' });
+        const jpeg = await previewFilmCover(db, run, film, options.coverMedia);
+        const coverImage = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+        if (!config.enabled) return NextResponse.json({ html: '', coverImage });
         const coverSec = options.cover ? FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS : 0;
+        const hueMode = resolveTemplateHueMode(resolvePackagingTemplateDir(resolvePackagingDir(), config.template));
+        const paletteSource = !options.cover && options.coverMedia ? await previewFilmCover(db, run, film) : jpeg;
+        const palette = await extractPackagingPalette(paletteSource, hueMode);
         const html = packagingPreviewHtml({
           config, vars: buildPackagingVars({ subtitleCues: [], overrides: config.varsOverrides }),
-          totalSec: durationSec + coverSec, coverSec, edit: true, staticCover: true, coverEnabled: options.cover,
+          totalSec: durationSec + coverSec, coverSec, palette, edit: true, staticCover: true, coverEnabled: options.cover,
         });
-        return NextResponse.json({ html: html.replace('</head>', `<style>${filmPreviewFontCss(config)}</style></head>`) });
+        return NextResponse.json({ coverImage, html: html.replace('</head>', `<style>${filmPreviewFontCss(config)}</style></head>`) });
       }
       let record = listPackaging(db, run).find((item) => item.entryCode === entryCode);
       if (!record) {
