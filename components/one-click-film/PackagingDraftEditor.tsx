@@ -5,7 +5,7 @@ import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render
 import { clamp, filmCaptionSvg, isUneditedFilmPointSticker, resolveFilmSubtitleStyle, splitFilmCoverTitle, syncFilmPointStickers, STICKERS, type Position } from '@/lib/one-click-film/packaging-edit';
 import { applyPackagingStickerEdit, createManualPackagingSticker, MAX_STICKER_INSTANCES, planStickerFramesAtPlayhead, STICKER_MIN_DURATION_FRAMES, type PackagingStickerEditPatch } from '@/lib/media-core/packaging-stickers';
 import type { PackagingOptions, PackagingRecord, TextCue } from '@/lib/one-click-film/packaging';
-import { resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film/cover-media';
+import { fallbackFilmCover, resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film/cover-media';
 import type { CoverFraming } from '@/lib/media-core/cover-types';
 import { FilmCoverAutoControls } from './FilmCoverAutoControls';
 import { FilmCoverPanel } from './FilmCoverPanel';
@@ -218,7 +218,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const selectCover = (coverMedia?: FilmCoverMedia) => {
     const automatic = draft.autoCover?.sourceSignature === media.signature ? draft.autoCover.media : undefined;
     const selected = coverMedia ?? automatic
-      ?? { kind: 'auto_frame', frame: 0, sourceSignature: media.signature, fallback: true };
+      ?? fallbackFilmCover(media.signature);
     onChange({ ...draft, coverFrameClamped: false, options: { ...draft.options, coverMedia: selected } });
     if (offset) seek(0);
   };

@@ -106,7 +106,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
   const [working, setWorking] = useState('');
   const [draft, setDraft] = useState<PackagingRecord | null>(null);
   const [baseline, setBaseline] = useState<PackagingRecord | null>(null);
-  const [subtitleWaiting, setSubtitleWaiting] = useState('');
+  const [subtitleWaiting, setSubtitleWaiting] = useState<{ entryCode: string; fromOpen: boolean } | null>(null);
   const [media, setMedia] = useState<PackagingMedia | null>(null);
   const [initialShot, setInitialShot] = useState<string>();
   const [confirm, setConfirm] = useState(false);
@@ -160,7 +160,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
       setDraft(result.record);
       setMedia(result.media);
       setNotice(result.subtitleWarning || '');
-      setSubtitleWaiting(result.subtitleWaiting ? entryCode : '');
+      setSubtitleWaiting(result.subtitleWaiting ? { entryCode, fromOpen: true } : null);
       setInitialShot(shotId);
     } catch (cause) { if (!signal?.aborted) setError(message(cause)); }
     finally { if (!signal?.aborted) setWorking(''); }
@@ -173,30 +173,31 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     return () => { clearTimeout(timer); abort.abort(); };
   }, [openEditor, focus]);
 
-  const canPrepareSubtitles = Boolean(draft && baseline && draft.entryCode === subtitleWaiting && draft.options.subtitles
+  const canPrepareSubtitles = Boolean(draft && baseline && draft.entryCode === subtitleWaiting?.entryCode && draft.options.subtitles
     && draftValues(draft) === draftValues(baseline));
   const subtitleRevision = draft?.revision;
   useEffect(() => {
-    if (!canPrepareSubtitles || working) return;
+    if (!canPrepareSubtitles || !subtitleWaiting || working) return;
+    const { entryCode, fromOpen } = subtitleWaiting;
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       try {
         const result = await fetch(`${base}/packaging`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: abort.signal,
-          body: JSON.stringify({ action: 'recognize-subtitles', entryCode: subtitleWaiting, revision: subtitleRevision }) }).then(readResponse);
+          body: JSON.stringify({ action: 'recognize-subtitles', entryCode, revision: subtitleRevision, prepareIfMissing: fromOpen }) }).then(readResponse);
         if (abort.signal.aborted) return;
         if (result.subtitleWaiting) { timer = setTimeout(() => void check(), 5000); return; }
-        const updated = result.packaging?.find(item => item.entryCode === subtitleWaiting);
+        const updated = result.packaging?.find(item => item.entryCode === entryCode);
         if (!updated) throw new Error('未能读取字幕识别结果');
         setRecords(result.packaging!);
         setBaseline(updated);
         setDraft(updated);
         setSelected(current => Object.hasOwn(current, updated.entryCode) ? { ...current, [updated.entryCode]: updated.revision } : current);
-        setSubtitleWaiting('');
+        setSubtitleWaiting(null);
         setNotice(updated.subtitleCues.length ? '口播字幕已对时。' : '未识别到口播。');
       } catch (cause) {
         if (abort.signal.aborted) return;
-        setSubtitleWaiting('');
+        setSubtitleWaiting(null);
         setNotice('');
         setError(message(cause));
       }
@@ -356,7 +357,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
       const record = await save(draft);
       const result = await post('packaging', { action: 'recognize-subtitles', entryCode: record.entryCode, revision: record.revision });
       if (result.subtitleWaiting) {
-        setSubtitleWaiting(record.entryCode);
+        setSubtitleWaiting({ entryCode: record.entryCode, fromOpen: false });
         setNotice('口播识别正在等待名额，空出后自动对时。');
         return;
       }
@@ -364,7 +365,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
       if (!updated) throw new Error('未能读取字幕识别结果');
       setDraft(updated);
       setBaseline(updated);
-      setSubtitleWaiting('');
+      setSubtitleWaiting(null);
       setRecords(result.packaging!);
       setSelected((current) => Object.hasOwn(current, updated.entryCode)
         ? { ...current, [updated.entryCode]: updated.revision } : current);

@@ -68,7 +68,7 @@ type GatewayTaskResponse = {
 
 const SUBMIT_TIMEOUT_MS = 60_000;
 const POLL_REQUEST_TIMEOUT_MS = 30_000;
-const MAX_POLL_TIME_MS = 900_000;
+export const GATEWAY_IMAGE_MAX_POLL_TIME_MS = 900_000;
 
 function normalizeGatewayStatus(raw: string | undefined): GatewayTaskPollResult['status'] {
   if (!raw) return 'unknown';
@@ -406,15 +406,15 @@ export async function pollGatewayTaskImage(
   const elapsedMs = Date.now() - startedAt;
   const pollIntervalMs = elapsedMs < 120_000 ? 5000 : 10000;
 
-  if (elapsedMs >= MAX_POLL_TIME_MS) {
+  if (elapsedMs >= GATEWAY_IMAGE_MAX_POLL_TIME_MS) {
     return {
       status: 'unknown',
-      errorMessage: `Polling timeout after ${MAX_POLL_TIME_MS / 1000}s`,
+      errorMessage: `Polling timeout after ${GATEWAY_IMAGE_MAX_POLL_TIME_MS / 1000}s`,
       rawResponse: null,
     };
   }
 
-  await sleep(Math.min(pollIntervalMs, MAX_POLL_TIME_MS - elapsedMs));
+  await sleep(Math.min(pollIntervalMs, GATEWAY_IMAGE_MAX_POLL_TIME_MS - elapsedMs));
 
   return readGatewayTaskImage(taskId, apiKey, baseUrl, signal);
 }

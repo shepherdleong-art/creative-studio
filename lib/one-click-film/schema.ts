@@ -615,6 +615,7 @@ function assertTablesExist(db: Database.Database): void {
     'one_click_film_packaging',
     'one_click_film_exports',
     'one_click_film_auto_covers',
+    'one_click_film_cover_assets',
   ]) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`一键成片 schema 缺少表 ${table}`);

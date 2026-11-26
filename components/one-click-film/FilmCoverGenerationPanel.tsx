@@ -87,7 +87,7 @@ export function FilmCoverGenerationPanel({ projectId, entryCode, template, image
     {config?.reason ? <p className={styles.hint} role="status">{config.reason}</p> : null}
     <p className={styles.hint}>{FILM_COVER_TITLE_CLEARANCE[template]}</p>
     {images.length > 0 ? <fieldset className={styles.filmCoverReferences}>
-      <legend className={styles.hint}>项目参考图（{references.length}/{maxReferences}）</legend>
+      <legend className={styles.hint}>项目参考图（<span className="tnum">{references.length}/{maxReferences}</span>）</legend>
       {images.map(image => <label key={image.id} title={image.filename} className={styles.filmCoverReference}>
         <input type="checkbox" checked={references.includes(image.id)}
           disabled={submitting || (!references.includes(image.id) && references.length >= maxReferences)}
@@ -121,9 +121,9 @@ export function FilmCoverGenerationPanel({ projectId, entryCode, template, image
             framing: cover.kind === 'generated_image' && cover.assetId === candidate.id ? cover.framing : undefined })}>
           {/* eslint-disable-next-line @next/next/no-img-element -- 受权候选缩略图 */}
           <img src={candidate.thumbnailUrl} alt="" loading="lazy" />
-          <span>{index + 1} · {candidate.channel}</span>
+          <span className="tnum">{index + 1} · {candidate.channel}</span>
         </button> : <div key={candidate.id} className={styles.filmCoverShot} role="status">
-          <span>{index + 1} · {candidate.channel}</span>
+          <span className="tnum">{index + 1} · {candidate.channel}</span>
           <span className={candidate.status === 'failed' ? styles.hintFail : styles.hint}>{candidate.message}</span>
         </div>)}
     </div> : null}

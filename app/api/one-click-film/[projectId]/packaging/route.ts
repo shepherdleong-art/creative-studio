@@ -148,7 +148,7 @@ async function __teamRoutePOST(
     }
     if (action === 'recognize-subtitles') {
       try {
-        await recognizeFilmPackagingSubtitles(db, run, entryCode, Number(body.revision));
+        await recognizeFilmPackagingSubtitles(db, run, entryCode, Number(body.revision), body.prepareIfMissing === true ? 'open' : 'explicit');
       } catch (error) {
         if (isExecutionDeferredError(error)) return NextResponse.json({ subtitleWaiting: true }, { status: 202 });
         if (isExecutionUnknownError(error)) throw new OneClickFilmError('conflict', '口播识别已提交，正在等待结果核对。', 409);
@@ -199,7 +199,7 @@ async function __teamRoutePOST(
       let subtitleWaiting = false;
       if (body.prepareSubtitles === true && record?.options.subtitles && !record.subtitlesPrepared && film.snapshot.soundMode !== 'none') {
         try {
-          await recognizeFilmPackagingSubtitles(db, run, entryCode, record.revision);
+          await recognizeFilmPackagingSubtitles(db, run, entryCode, record.revision, 'open');
         } catch (error) {
           if (error instanceof OneClickFilmError && error.code === 'conflict') throw error;
           subtitleWaiting = isExecutionDeferredError(error);
@@ -207,13 +207,17 @@ async function __teamRoutePOST(
             : isExecutionUnknownError(error) ? '口播识别已提交，正在等待结果核对。'
               : '口播对时未完成。可在字幕面板校对草稿或重新识别。';
         }
-        record = listPackaging(db, run).find(item => item.entryCode === entryCode);
       }
       const review = listReviews(db, run).find((item) => item.jobId === film.jobId);
       if (!review) throw new OneClickFilmError('not_found', '审片记录尚未准备好', 404);
       const hdReady = film.draft && readyHdPaths(db, run, film).size === sourceIdsForBody(film).length;
       const url = await getFilmPreview(db, run, film, hdReady);
       const playback = reviewForPlayback(review, Math.round(durationSec * 1e6));
+      record = listPackaging(db, run).find(item => item.entryCode === entryCode);
+      if (record?.subtitlesPrepared) {
+        subtitleWaiting = false;
+        subtitleWarning = undefined;
+      }
       return NextResponse.json({
         record, subtitleWarning, subtitleWaiting,
         coverGeneration: await filmCoverGenerationConfig(db), coverCandidates: listFilmCoverCandidates(db, run, film.entryId),

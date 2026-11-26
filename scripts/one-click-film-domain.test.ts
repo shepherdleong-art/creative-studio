@@ -354,6 +354,12 @@ assert.equal(f03Saved.modelSource, 'individual');
 assert.match(f03Saved.promptText, /人物：无出镜人物/);
 
 assert.equal(listEntries(db, run.id).length, 3);
+const { checkOneClickFilmReadiness } = await import('../lib/one-click-film/readiness.ts');
+const { schemaUpgradeRuntimePaths } = await import('../lib/schema-upgrade/runtime.ts');
+db.exec('DROP TABLE one_click_film_cover_assets');
+const missingCoverAssetTable = await checkOneClickFilmReadiness({ db, ...schemaUpgradeRuntimePaths(dataRoot) });
+assert.equal(missingCoverAssetTable.available, false, '数据库缺少已迁移的封面资产表时，一键成片暂停受理');
+if (!missingCoverAssetTable.available) assert.equal(missingCoverAssetTable.code, 'schema_history_invalid');
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });
 console.log('one-click-film domain tests passed');

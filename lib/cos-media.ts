@@ -110,6 +110,7 @@ type CosUploadOptions = {
   maxDim?: number;
   /** 本次上传的压缩质量覆盖（默认取 CREATIVE_STUDIO_COS_QUALITY）。 */
   quality?: number;
+  signal?: AbortSignal;
 };
 
 /**
@@ -480,7 +481,10 @@ async function uploadBufferAndSign(
   mime: string,
   options?: CosUploadOptions,
 ): Promise<string> {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   const prepared = await prepareUploadBuffer(config, buffer, ext, mime, options);
+  signal?.throwIfAborted();
   buffer = prepared.buffer;
   ext = prepared.ext;
   mime = prepared.mime;
@@ -517,7 +521,7 @@ async function uploadBufferAndSign(
   });
   const existsRes = await fetch(baseUrl, {
     headers: { Authorization: existsAuth, Range: 'bytes=0-0' },
-    signal: AbortSignal.timeout(EXISTS_CHECK_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(EXISTS_CHECK_TIMEOUT_MS)]) : AbortSignal.timeout(EXISTS_CHECK_TIMEOUT_MS),
   });
   await existsRes.arrayBuffer().catch(() => undefined);
 
@@ -535,7 +539,7 @@ async function uploadBufferAndSign(
         'Content-Length': String(buffer.byteLength),
       },
       body: buffer,
-      signal: AbortSignal.timeout(PUT_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(PUT_TIMEOUT_MS)]) : AbortSignal.timeout(PUT_TIMEOUT_MS),
     });
     if (!putRes.ok) {
       const status = putRes.status;
@@ -547,6 +551,7 @@ async function uploadBufferAndSign(
     throw new Error(`查询 COS 参考图失败（HTTP ${status}）：${cosErrorHint(status)}`);
   }
 
+  signal?.throwIfAborted();
   const url = buildSignedGetUrl(config, pathname, startTs, endTs);
   signedUrlCache.set(objectKey, { url, expiresAtMs: endTs * 1000 });
   return url;

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { CoverFraming } from '../media-core/cover-types.ts';
-import { parseFilmCoverMedia, resolveFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
+import { fallbackFilmCover, parseFilmCoverMedia, resolveFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
 import type { FilmBody } from './composition.ts';
 
 type AutoCover = Extract<FilmCoverMedia, { kind: 'auto_frame' }>;
@@ -44,14 +44,13 @@ export function readFilmAutoCover(db: Database.Database, body: FilmBody): FilmAu
   }
   if (row?.state === 'fallback') {
     return { ...base, status: 'fallback', reason: row.reason ?? 'request_failed',
-      media: { kind: 'auto_frame', frame: 0, sourceSignature: body.signature, fallback: true } };
+      media: fallbackFilmCover(body.signature) };
   }
   return { ...base, status: 'pending' };
 }
 
 export function automaticFilmCoverForDraft(db: Database.Database, body: FilmBody, framing?: CoverFraming): AutoCover {
-  const media: AutoCover = readFilmAutoCover(db, body).media
-    ?? { kind: 'auto_frame', frame: 0, sourceSignature: body.signature, fallback: true };
+  const media = readFilmAutoCover(db, body).media ?? fallbackFilmCover(body.signature);
   return { ...media, ...(framing && { framing }) };
 }
 
@@ -66,7 +65,7 @@ export function filmCoverChoiceToReconcile(current: FilmCoverMedia | undefined, 
   if (current && current.kind !== 'auto_frame') return;
   if (auto.status === 'pending' && (!current || current.sourceSignature === body.signature)) return;
   if (auto.status === 'fallback' && !current) return; // Legacy implicit first frame is already the same choice.
-  const next = auto.media ?? { kind: 'auto_frame', frame: 0, sourceSignature: body.signature, fallback: true };
+  const next = auto.media ?? fallbackFilmCover(body.signature);
   if (current && current.sourceSignature === next.sourceSignature && current.frame === next.frame
     && current.shotId === next.shotId && current.fallback === next.fallback) return;
   return { ...next, ...(current?.framing && { framing: current.framing }) };

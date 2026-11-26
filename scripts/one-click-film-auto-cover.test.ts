@@ -11,7 +11,7 @@ const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocf-auto-cover-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
 
-const { syncFilmAutoCover, retryFilmAutoCover } = await import('../lib/one-click-film/cover-auto.ts');
+const { syncFilmAutoCover, retryFilmAutoCover, scheduleFilmAutoCover, stopFilmAutoCover } = await import('../lib/one-click-film/cover-auto.ts');
 const { tryFilmRequestLock } = await import('../lib/one-click-film/request-lock.ts');
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
@@ -21,6 +21,7 @@ const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 const { getOrCreateRun, createAnalysisVersion, markAnalysisSucceeded } = await import('../lib/one-click-film/store.ts');
 const { upsertReviewFromDetection } = await import('../lib/one-click-film/review.ts');
 const { listPackaging, preparePackaging, updatePackagingDraft } = await import('../lib/one-click-film/packaging.ts');
+const { recognizeFilmPackagingSubtitles } = await import('../lib/one-click-film/packaging-render.ts');
 
 let requests = 0;
 let receivedFrames: number[] = [];
@@ -28,8 +29,16 @@ let fixtureError: unknown;
 let reply = '{"candidate":2}';
 let code = 200;
 let onRequest: (() => Promise<void>) | undefined;
+let onTranscription: (() => Promise<void>) | undefined;
 const server = createServer(async (request, response) => {
   try {
+    if (request.url === '/v1/audio/transcriptions') {
+      for await (const chunk of request) assert.ok(chunk.length > 0);
+      await onTranscription?.();
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ text: '真实口播。', words: [{ word: '真实口播。', start: 0.25, end: 1.5 }] }));
+      return;
+    }
     assert.equal(request.url, '/v1/chat/completions');
     const pieces: Buffer[] = [];
     for await (const data of request) pieces.push(data);
@@ -80,14 +89,15 @@ try {
   const directory = path.join(dataRoot, 'storage', 'videos');
   fs.mkdirSync(directory, { recursive: true });
   const video = path.join(directory, 'fixture.mp4');
-  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'testsrc2=s=540x720:r=24:d=3', '-pix_fmt', 'yuv420p', video], { timeoutMs: 20_000 });
-  const source = (id: string, durationUs: number, cutsUs: number[]) => {
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'testsrc2=s=540x720:r=24:d=3', '-f', 'lavfi', '-i', 'sine=d=3',
+    '-pix_fmt', 'yuv420p', video], { timeoutMs: 20_000 });
+  const source = (id: string, durationUs: number, cutsUs: number[], soundMode = 'none') => {
     db.prepare(`INSERT INTO video_jobs(id,projectId,sourceImageId,providerId,model,prompt,status,localVideoPath)
       VALUES (?,'project','image','p','fixture','','succeeded',?)`).run('video-' + id, video);
     db.prepare(`INSERT INTO one_click_film_video_jobs
       (id,runId,projectId,entryId,entryCode,requestKey,shotSetId,shotId,videoJobId,status,providerId,model,generationMode,aspectRatio,durationSec,scriptSnapshotJson,createdAt,updatedAt)
       VALUES (?,?,'project','entry','F01',?,'ss','shot',?,'succeeded','p','fixture','direct','3:4',?,?,?,?)`)
-      .run(id, run.id, id, 'video-' + id, durationUs / 1e6, JSON.stringify({ analysisId: analysis.id, productName: '云朵床', soundMode: 'none' }), now, now);
+      .run(id, run.id, id, 'video-' + id, durationUs / 1e6, JSON.stringify({ analysisId: analysis.id, productName: '云朵床', soundMode }), now, now);
     upsertReviewFromDetection(db, { run, jobId: id, entryId: 'entry', entryCode: 'F01', durationUs, fps: 24, cutsUs, detection: cutsUs.length ? 'cuts' : 'single' });
     return readFilmBody(db, run, 'F01')!;
   };
@@ -116,7 +126,7 @@ try {
   await Promise.all([syncFilmAutoCover(db, run, body), syncFilmAutoCover(db, run, body)]);
   assert.equal(fixtureError, undefined);
   assert.equal(requests, 1, '并发同步只请求一次');
-  assert.deepEqual(receivedFrames, [12, 36, 60], '每个候选位于镜头内部');
+  assert.deepEqual(receivedFrames, [12, 36, 60, 16, 40, 64], '有余量时补采每个镜头后段，保留中段候选编号');
   assert.equal(current().autoCover?.attempt, initialAttempt + 1);
   const auto = current().options.coverMedia;
   assert.deepEqual(auto, { kind: 'auto_frame', frame: 36, shotId: 's2', sourceSignature: body.signature, framing });
@@ -230,6 +240,48 @@ try {
     await syncFilmAutoCover(db, run, body);
     assert.deepEqual(current().options.coverMedia, chosen);
     assert.equal(current().revision, revision);
+  }
+
+  process.env.FINAL_EDIT_ALIGNMENT_BASE_URL = 'http://127.0.0.1:' + address.port;
+  process.env.FINAL_EDIT_ALIGNMENT_API_KEY = 'fixture';
+  process.env.FINAL_EDIT_ALIGNMENT_MODEL = 'fixture';
+  body = source('with-speech', 3_000_000, [1_000_000, 2_000_000], 'native');
+  updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: current().revision, options: { coverMedia: null } });
+  const speechStarted = Promise.withResolvers<void>();
+  const finishSpeech = Promise.withResolvers<void>();
+  onTranscription = () => { speechStarted.resolve(); return finishSpeech.promise; };
+  const openedAt = current().revision;
+  const recognition = recognizeFilmPackagingSubtitles(db, run, 'F01', openedAt, 'open');
+  try {
+    await Promise.race([speechStarted.promise, recognition]);
+    reply = '{"candidate":2}';
+    await syncFilmAutoCover(db, run, body);
+    assert.equal(current().autoCover?.media?.frame, 36);
+  } finally {
+    finishSpeech.resolve();
+  }
+  await recognition;
+  assert.equal(current().subtitleCues[0]?.text, '真实口播。');
+  assert.equal(current().subtitlesPrepared, true);
+  const selectedAfterRecognition = current().options.coverMedia;
+  assert.equal(selectedAfterRecognition?.kind === 'auto_frame' && selectedAfterRecognition.frame, 36);
+  assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: openedAt, title: '旧草稿' }),
+    { code: 'conflict' }, '主动保存仍严格校验草稿修订号');
+
+  retry();
+  const visionStarted = Promise.withResolvers<void>();
+  const finishVision = Promise.withResolvers<void>();
+  onRequest = () => { visionStarted.resolve(); return finishVision.promise; };
+  scheduleFilmAutoCover(db, run, body);
+  await visionStarted.promise;
+  try {
+    const stoppedAt = Date.now();
+    await stopFilmAutoCover();
+    assert.ok(Date.now() - stoppedAt < 4_000, '停机应取消正在等待的自动选帧请求');
+    assert.equal(current().autoCover?.status, 'pending', '停机中断不发布结果或回退');
+    assert.deepEqual(current().options.coverMedia, selectedAfterRecognition);
+  } finally {
+    finishVision.resolve();
   }
   console.log('one-click-film-auto-cover passed');
 } finally {

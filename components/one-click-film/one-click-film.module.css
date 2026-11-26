@@ -744,7 +744,7 @@
 .staticFilmCover { width: 100%; border: 0; padding: 0; cursor: pointer; }
 .staticFilmCover:disabled { cursor: default; }
 .staticFilmCover:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.staticFilmCover img { width: 100%; height: 100%; min-height: 0; object-fit: cover; }
+.staticFilmCover img { width: 100%; height: 100%; min-height: 0; object-fit: contain; }
 .draftWorkspace { display: grid; min-width: 0; gap: 12px; }
 .draftToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .draftToolbar > b { margin-inline-end: auto; overflow-wrap: anywhere; }

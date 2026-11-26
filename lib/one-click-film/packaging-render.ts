@@ -8,6 +8,7 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { canonicalJson } from '../canonical-json.ts';
 import { dataRoot } from '../data-root.ts';
 import { probeVideoMedia, runFfmpeg } from '../ffmpeg.ts';
 import { registerManagedFile } from '../media-core/access-context.ts';
@@ -101,37 +102,52 @@ async function timedSubtitles(db: Database.Database, run: OneClickFilmRun, body:
 }
 
 /** Refresh the editable cues without rendering a packaged MP4. */
-export function recognizeFilmPackagingSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number) {
-  const key = `subtitles/${run.id}/${code}/${revision}`;
+export function recognizeFilmPackagingSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number,
+  mode: 'explicit' | 'open' = 'explicit') {
+  const key = `subtitles/${run.id}/${code}/${revision}/${mode}`;
   let work = pending.get(key);
   if (!work) {
-    work = recognizeRevisionSubtitles(db, run, code, revision).finally(() => pending.delete(key));
+    work = recognizeRevisionSubtitles(db, run, code, revision, mode === 'open').finally(() => pending.delete(key));
     pending.set(key, work);
   }
   return work;
 }
 
-async function recognizeRevisionSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number) {
+function subtitleRecognitionInputs(record: PackagingRecord) {
+  const { subtitles, decoration, pointCuesEdited, assetStickers } = record.options;
+  return canonicalJson([record.subtitleCues, record.pointCues, subtitles, decoration, pointCuesEdited, assetStickers]);
+}
+
+async function recognizeRevisionSubtitles(db: Database.Database, run: OneClickFilmRun, code: string, revision: number, whenOpening: boolean) {
   const body = readFilmBody(db, run, code);
   const record = listPackaging(db, run).find((item) => item.entryCode === code);
-  if (!body || !record || record.revision !== revision) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
+  if (!body || !record || (!whenOpening && record.revision !== revision)) {
+    throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
+  }
+  if (whenOpening && (record.subtitlesPrepared || !record.options.subtitles)) return;
   const directory = filmStoragePath(path.join('one-click-film', 'packaging', run.id));
   await fs.mkdir(directory, { recursive: true });
   const work = await fs.mkdtemp(path.join(directory, 'subtitle-'));
   try {
     const playable = await playableFilmBody(body);
     const { cues, words } = await timedSubtitles(db, run, playable, work);
-    if (readFilmBody(db, run, code)?.signature !== body.signature) throw new OneClickFilmError('conflict', '成片已更新，请重新识别字幕', 409);
-    const points = record.options.decoration && !record.options.pointCuesEdited
-      ? extractFilmPackagingPoints(db, run, code, cues, words) : record.pointCues;
-    const currentStickers = record.options.assetStickers ?? [];
-    const assetStickers = currentStickers.some(isUneditedFilmPointSticker) && !record.options.pointCuesEdited
-      ? syncFilmPointStickers(currentStickers, points, playable.frames)
-      : record.options.assetStickers;
-    const saved = db.prepare(
-      "UPDATE one_click_film_packaging SET subtitleCuesJson=?, pointCuesJson=?, optionsJson=?, title=?, audioSignature=?, status='pending', revision=revision+1, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?",
-    ).run(JSON.stringify(cues), JSON.stringify(points), JSON.stringify({ ...record.options, assetStickers }), record.title, filmAudioSignature(body), record.id, revision);
-    if (!saved.changes) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
+    db.transaction(() => {
+      if (readFilmBody(db, run, code)?.signature !== body.signature) throw new OneClickFilmError('conflict', '成片已更新，请重新识别字幕', 409);
+      const latest = whenOpening ? listPackaging(db, run).find(item => item.entryCode === code) : record;
+      if (whenOpening && (!latest || latest.id !== record.id || latest.subtitlesPrepared
+          || subtitleRecognitionInputs(latest) !== subtitleRecognitionInputs(record))) return;
+      if (!latest) return;
+      const points = latest.options.decoration && !latest.options.pointCuesEdited
+        ? extractFilmPackagingPoints(db, run, code, cues, words) : latest.pointCues;
+      const currentStickers = latest.options.assetStickers ?? [];
+      const assetStickers = currentStickers.some(isUneditedFilmPointSticker) && !latest.options.pointCuesEdited
+        ? syncFilmPointStickers(currentStickers, points, playable.frames)
+        : latest.options.assetStickers;
+      const saved = db.prepare(
+        "UPDATE one_click_film_packaging SET subtitleCuesJson=?, pointCuesJson=?, optionsJson=?, title=?, audioSignature=?, status='pending', revision=revision+1, errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?",
+      ).run(JSON.stringify(cues), JSON.stringify(points), JSON.stringify({ ...latest.options, assetStickers }), latest.title, filmAudioSignature(body), latest.id, latest.revision);
+      if (!saved.changes) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开', 409);
+    }).immediate();
   } finally {
     await fs.rm(work, { recursive: true, force: true });
   }

@@ -77,30 +77,33 @@ export function readFilmBody(db: Database.Database, run: OneClickFilmRun, entryC
 // Keep the stored edit/approval signature, but resolve playback against the original pictures.
 const originalLengths = new Map<string, Promise<number>>();
 
-async function playableFrames(file: string, reviewDurationUs: number): Promise<number> {
+async function playableFrames(file: string, reviewDurationUs: number, signal?: AbortSignal): Promise<number> {
   const requested = bodyFrame(reviewDurationUs);
-  const media = await probeVideoMedia(file);
+  const media = await probeVideoMedia(file, { signal });
+  signal?.throwIfAborted();
   if (!media.hasAudio || !media.videoDurationUs || media.durationUs !== reviewDurationUs
       || bodyFrame(media.videoDurationUs) >= requested) return requested;
-  const decoded = await countFilmFrames(file);
+  const decoded = await countFilmFrames(file, signal);
   // A truncated or undecodable source must still fail validation.
   return decoded > 0 && decoded === bodyFrame(media.videoDurationUs) ? decoded : requested;
 }
 
-export async function playableFilmBody(body: FilmBody): Promise<FilmBody> {
+export async function playableFilmBody(body: FilmBody, signal?: AbortSignal): Promise<FilmBody> {
+  signal?.throwIfAborted();
   if (body.reviewDurationUs === undefined) return body;
   const original = await fs.stat(body.originalPath).catch(error => {
     // A whole-film replacement can still play if the original has since been removed.
     if (error.code === 'ENOENT') return null;
     throw error;
   });
+  signal?.throwIfAborted();
   if (!original) return body;
   const { size, mtimeMs } = original;
   const key = JSON.stringify([body.originalPath, size, mtimeMs, body.reviewDurationUs]);
   let length = originalLengths.get(key);
   if (!length) {
     if (originalLengths.size >= 128) originalLengths.delete(originalLengths.keys().next().value!);
-    length = playableFrames(body.originalPath, body.reviewDurationUs).catch(error => {
+    length = playableFrames(body.originalPath, body.reviewDurationUs, signal).catch(error => {
       originalLengths.delete(key);
       throw error;
     });

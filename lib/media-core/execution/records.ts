@@ -51,21 +51,21 @@ export function mapOperation(row: OperationRow): OperationRecord {
  * 完整输入只在真正授予后按 ID 读取整行时解析。
  */
 export interface OperationDecisionRow {
-  id: string; actorId: string; scopeType: string; scopeId: string;
+  id: string; actorId: string; scopeType: string; scopeId: string; module: string;
   providerSnapshotJson: string; requiredPoolsJson: string; quoteJson: string;
   status: string; readySeq: number; createdAt: string;
   mediaTaskId: string | null; channelKey: string | null;
 }
 
 export interface OperationDecision {
-  id: string; actorId: string; scopeType: string; scopeId: string;
+  id: string; actorId: string; scopeType: string; scopeId: string; module: string;
   providerSnapshot: unknown; requiredPools: string[]; quote: OperationRecord['quote'];
   status: string; readySeq: number; createdAt: string;
   mediaTaskId: string | null; channelKey: string | null;
 }
 
 export const OPERATION_DECISION_COLUMNS = [
-  'id', 'actorId', 'scopeType', 'scopeId', 'providerSnapshotJson', 'requiredPoolsJson', 'quoteJson',
+  'id', 'actorId', 'scopeType', 'scopeId', 'module', 'providerSnapshotJson', 'requiredPoolsJson', 'quoteJson',
   'status', 'readySeq', 'createdAt', 'mediaTaskId', 'channelKey',
 ].join(', ');
 

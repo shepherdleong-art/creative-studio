@@ -337,7 +337,7 @@ function readRequestedOperation(
 
 export function admitOperation(
   options: AdmissionOptions,
-  instance: InstanceFence & { leaseMs?: number; operationId?: string },
+  instance: InstanceFence & { leaseMs?: number; operationId?: string; module?: string },
 ): AdmitResult {
   options.assertOpen();
   if (!Number.isSafeInteger(instance.fence) || instance.fence <= 0 || !instance.instanceId.trim()) {
@@ -357,7 +357,7 @@ export function admitOperation(
       | { cursorActorId: string | null } | undefined;
     if (!state) throw new ExecutionError('execution_not_ready', '执行轮转状态未就绪。');
     const requested = instance.operationId ? readRequestedOperation(options, instance.operationId) : undefined;
-    if (instance.operationId && !requested) return { kind: 'idle' };
+    if (instance.operationId && (!requested || (instance.module && requested.module !== instance.module))) return { kind: 'idle' };
     const actors = requested
       ? [requested.actorId]
       : (options.db.prepare(`
@@ -371,7 +371,8 @@ export function admitOperation(
       : actors;
     const reasons: AdmissionWaitReason[] = [];
     for (const actorId of ordered) {
-      const rows = requested ? [requested] : waitingRowsByActor(run).get(actorId) ?? [];
+      const waiting = requested ? [] : waitingRowsByActor(run).get(actorId) ?? [];
+      const rows = requested ? [requested] : instance.module ? waiting.filter(row => row.module === instance.module) : waiting;
       if (rows.length === 0) continue;
       const policy = readPolicy(run, actorId);
       const evaluations: AdmissionEvaluation[] = rows.map((operation) => ({

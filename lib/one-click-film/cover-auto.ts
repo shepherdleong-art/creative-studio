@@ -22,15 +22,28 @@ type CoverCandidate = { frame: number; shotId: string };
 type CoverVisionRequest = { request: CompleteJsonInput; candidates: CoverCandidate[] };
 type CoverOutcome = CoverCandidate | { reason: FilmAutoCoverFallback };
 
+function evenlySpaced<T>(choices: T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  if (choices.length <= limit) return choices;
+  if (limit === 1) return [choices[Math.floor((choices.length - 1) / 2)]!];
+  return Array.from({ length: limit }, (_, index) =>
+    choices[Math.round(index * (choices.length - 1) / (limit - 1))]!);
+}
+
 function planFilmCoverCandidates(shots: readonly ReviewShot[], frames: number): CoverCandidate[] {
-  const candidates = shots.flatMap(shot => {
+  const middle: CoverCandidate[] = [];
+  const later: CoverCandidate[] = [];
+  for (const shot of shots) {
     const start = Math.max(0, bodyFrame(shot.startUs));
     const end = Math.min(frames, bodyFrame(shot.endUs));
-    return end > start ? [{ frame: Math.min(end - 1, Math.floor((start + end) / 2)), shotId: shot.id }] : [];
-  });
-  if (candidates.length <= MAX_CANDIDATES) return candidates;
-  return Array.from({ length: MAX_CANDIDATES }, (_, index) =>
-    candidates[Math.round(index * (candidates.length - 1) / (MAX_CANDIDATES - 1))]!);
+    if (end <= start) continue;
+    const frame = Math.floor((start + end) / 2);
+    middle.push({ frame, shotId: shot.id });
+    const laterFrame = Math.min(end - 2, start + Math.floor((end - start) * 2 / 3));
+    if (laterFrame > frame) later.push({ frame: laterFrame, shotId: shot.id });
+  }
+  const primary = evenlySpaced(middle, MAX_CANDIDATES);
+  return [...primary, ...evenlySpaced(later, MAX_CANDIDATES - primary.length)];
 }
 
 function readCoverChoice(value: unknown, candidates: readonly CoverCandidate[]): CoverOutcome {
@@ -54,9 +67,10 @@ function coverVisionFailure(error: unknown): CoverOutcome {
 }
 
 async function prepareVisionRequest(
-  db: Database.Database, run: OneClickFilmRun, body: FilmBody, attempt: number,
+  db: Database.Database, run: OneClickFilmRun, body: FilmBody, attempt: number, signal: AbortSignal,
 ): Promise<CoverVisionRequest | CoverOutcome> {
   const { pickVisionProvider } = await import('./analysis.ts');
+  signal.throwIfAborted();
   let provider: ReturnType<typeof pickVisionProvider>;
   try { provider = pickVisionProvider(); }
   catch { return { reason: 'no_provider' }; }
@@ -89,6 +103,7 @@ async function prepareVisionRequest(
     try {
       const images: NonNullable<CompleteJsonInput['images']> = [];
       for (const candidate of candidates) {
+        signal.throwIfAborted();
         let offset = candidate.frame;
         const segment = segments.find(item => {
           if (offset < item.count) return true;
@@ -97,8 +112,8 @@ async function prepareVisionRequest(
         });
         if (!segment) return { reason: 'media_unavailable' };
         const file = path.join(work, `${images.length}.jpg`);
-        await extractFilmCoverFrame(segment.file, segment.start + offset, file, true);
-        images.push({ mimeType: 'image/jpeg', imageBase64: (await fs.readFile(file)).toString('base64') });
+        await extractFilmCoverFrame(segment.file, segment.start + offset, file, true, signal);
+        images.push({ mimeType: 'image/jpeg', imageBase64: (await fs.readFile(file, { signal })).toString('base64') });
       }
       const taskId = `one-click-film-cover-${body.entryId}`;
       return { candidates, request: {
@@ -115,14 +130,16 @@ async function prepareVisionRequest(
       await fs.rm(work, { recursive: true, force: true });
     }
   } catch {
+    signal.throwIfAborted();
     return { reason: 'media_unavailable' };
   }
 }
 
-async function publishCover(db: Database.Database, run: OneClickFilmRun, body: FilmBody) {
+async function publishCover(db: Database.Database, run: OneClickFilmRun, body: FilmBody, signal: AbortSignal) {
   const lease = await tryFilmRequestLock('cover-draft', [body.entryId]);
   if (!lease) return;
   try {
+    if (signal.aborted || !db.open) return;
     db.transaction(() => {
       if (readFilmBody(db, run, body.entryCode)?.signature === body.signature) reconcileFilmCoverChoice(db, body);
     }).immediate();
@@ -131,23 +148,29 @@ async function publishCover(db: Database.Database, run: OneClickFilmRun, body: F
 
 /** A cross-process lease protects extraction and submission. Terminal rows are retried only by an explicit command. */
 export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilmRun, saved: FilmBody): Promise<void> {
+  const signal = queue.controller.signal;
+  if (signal.aborted) return;
   const lease = await tryFilmRequestLock('cover-auto', [saved.entryId, saved.signature]);
   if (!lease) return;
   const identity = [saved.entryId, saved.signature] as const;
   try {
-    if (readFilmBody(db, run, saved.entryCode)?.signature !== saved.signature) return;
+    if (signal.aborted || !db.open || readFilmBody(db, run, saved.entryCode)?.signature !== saved.signature) return;
     db.prepare(`INSERT OR IGNORE INTO one_click_film_auto_covers(entryId, sourceSignature, state, principalTaskId)
       VALUES (?, ?, 'queued', ?)`).run(...identity, saved.originalVideoJobId);
     const row = readFilmAutoCoverRow(db, saved)!;
-    const body = await playableFilmBody(saved).catch(() => saved);
-    await publishCover(db, run, body);
-    if (row.state === 'ready' || row.state === 'fallback') return;
+    const body = await playableFilmBody(saved, signal).catch(() => saved);
+    await publishCover(db, run, body, signal);
+    if (signal.aborted || !db.open || row.state === 'ready' || row.state === 'fallback') return;
     const settle = (outcome: CoverOutcome) => {
+      if (signal.aborted || !db.open) return;
       const selected = 'frame' in outcome;
-      db.prepare(`UPDATE one_click_film_auto_covers SET state=?, frame=?, shotId=?, reason=?, requestJson=NULL
+      const updated = db.prepare(`UPDATE one_click_film_auto_covers SET state=?, frame=?, shotId=?, reason=?, requestJson=NULL
         WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(
         selected ? 'ready' : 'fallback', selected ? outcome.frame : null, selected ? outcome.shotId : null,
         selected ? null : outcome.reason, ...identity, row.attempt);
+      if (updated.changes && !selected && outcome.reason !== 'no_panorama') {
+        console.warn('[OneClickFilm] 自动封面回退', outcome.reason);
+      }
     };
     try {
       // Local adapters lack a durable execution checkpoint after a process exit.
@@ -157,17 +180,19 @@ export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilm
         await runWithTaskAccessContext(db, row.principalModule, row.principalTaskId, async () => {
           requireAccessContext().assertAccess('project', run.projectId, 'read');
           const prepared: CoverVisionRequest | CoverOutcome = row.requestJson
-            ? JSON.parse(row.requestJson) as CoverVisionRequest : await prepareVisionRequest(db, run, body, row.attempt);
+            ? JSON.parse(row.requestJson) as CoverVisionRequest : await prepareVisionRequest(db, run, body, row.attempt, signal);
+          if (signal.aborted || !db.open) return;
           if (!('request' in prepared)) { settle(prepared); return; }
           if (readFilmBody(db, run, body.entryCode)?.signature !== body.signature) return;
           db.prepare(`UPDATE one_click_film_auto_covers SET state='started', requestJson=?
             WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(JSON.stringify(prepared), ...identity, row.attempt);
           const { completeJson } = await import('../script-providers/index.ts');
-          const response = await completeJson<unknown>(prepared.request);
+          const response = await completeJson<unknown>({ ...prepared.request, signal });
           settle(readCoverChoice(response, prepared.candidates));
         });
       }
     } catch (error) {
+      if (signal.aborted || !db.open) return;
       if (isExecutionDeferredError(error)) {
         db.prepare(`UPDATE one_click_film_auto_covers SET state='waiting'
           WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(...identity, row.attempt);
@@ -175,7 +200,7 @@ export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilm
         settle(coverVisionFailure(error));
       }
     }
-    await publishCover(db, run, body);
+    await publishCover(db, run, body, signal);
   } finally { lease.release(); }
 }
 
@@ -203,24 +228,38 @@ export function retryFilmAutoCover(db: Database.Database, run: OneClickFilmRun, 
   return body;
 }
 
-const queued = new Map<string, () => Promise<void>>();
-const active = new Set<string>();
+type AutoCoverQueue = {
+  controller: AbortController;
+  queued: Map<string, () => Promise<void>>;
+  active: Map<string, Promise<void>>;
+};
+const globals = globalThis as Record<PropertyKey, unknown>;
+const QUEUE_KEY = Symbol.for('creative-studio.one-click-film-auto-cover-queue');
+const queue = (globals[QUEUE_KEY] ??= { controller: new AbortController(), queued: new Map(), active: new Map() }) as AutoCoverQueue;
 
 function pumpCoverQueue() {
-  while (active.size < 2 && queued.size) {
-    const [key, work] = queued.entries().next().value!;
-    queued.delete(key);
-    active.add(key);
-    void work().catch(() => console.warn('[OneClickFilm] 自动挑帧未能同步')).finally(() => {
-      active.delete(key);
+  while (!queue.controller.signal.aborted && queue.active.size < 2 && queue.queued.size) {
+    const [key, work] = queue.queued.entries().next().value!;
+    queue.queued.delete(key);
+    const pending = work().catch(() => {
+      if (!queue.controller.signal.aborted) console.warn('[OneClickFilm] 自动封面回退', 'request_failed');
+    }).finally(() => {
+      queue.active.delete(key);
       pumpCoverQueue();
     });
+    queue.active.set(key, pending);
   }
 }
 
 export function scheduleFilmAutoCover(db: Database.Database, run: OneClickFilmRun, body: FilmBody) {
   const key = `${body.entryId}/${body.signature}`;
-  if (active.has(key) || queued.has(key)) return;
-  queued.set(key, () => syncFilmAutoCover(db, run, body));
+  if (queue.controller.signal.aborted || queue.active.has(key) || queue.queued.has(key)) return;
+  queue.queued.set(key, () => syncFilmAutoCover(db, run, body));
   pumpCoverQueue();
+}
+
+export async function stopFilmAutoCover() {
+  queue.controller.abort();
+  queue.queued.clear();
+  await Promise.allSettled(queue.active.values());
 }

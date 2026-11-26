@@ -212,7 +212,8 @@ async function completeJsonDirect<T>(
     });
     if (input.images?.length) {
       images = await Promise.all(input.images.map(async (image) => {
-        const imageUrl = await tryUploadBufferToCosAndSign(Buffer.from(image.imageBase64, 'base64'), image.mimeType, input.preserveImageBytes ? { compress: false } : undefined);
+        const imageUrl = await tryUploadBufferToCosAndSign(Buffer.from(image.imageBase64, 'base64'), image.mimeType,
+          { ...(input.preserveImageBytes ? { compress: false } : {}), signal: input.signal });
         if (!imageUrl) {
           throw new Error('公司供应商的视觉媒体传输未配置：请在 .env.local 配置 CREATIVE_STUDIO_COS_SECRET_ID / CREATIVE_STUDIO_COS_SECRET_KEY / CREATIVE_STUDIO_COS_DOMAIN 后重启');
         }
@@ -357,6 +358,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
   } else {
     assertExternalProviderExecutionAvailable(runtime, capability);
   }
+  input.signal?.throwIfAborted();
   const provider = providerExecutionSnapshot(runtime);
   let snapshot: LlmOperationSnapshot = { request: persistentRequest(input), provider };
   const inputRevision = context.inputRevision ?? 'r1';
@@ -394,6 +396,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
   });
   let operation = enqueue().operation;
   for (;;) {
+    input.signal?.throwIfAborted();
     if (operation.status === 'succeeded') {
       const rawText = typeof operation.result === 'string'
         ? operation.result
@@ -422,6 +425,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
         await executeExecutionContinuation(admitted.grant, moduleRuntime.facade);
       }
     } catch (error) {
+      input.signal?.throwIfAborted();
       if (own) {
         operation = enqueue().operation;
         if (operation.status === 'unknown' || operation.status === 'reconciling') {
@@ -430,6 +434,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
         throw error;
       }
     }
+    input.signal?.throwIfAborted();
     operation = enqueue().operation;
   }
 }

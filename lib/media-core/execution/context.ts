@@ -254,7 +254,7 @@ export interface ExecutionErrorCapture {
 
 export interface ExecutionFacade {
   enqueue(input: EnqueueInput): EnqueueResult;
-  admit(instance: InstanceFence & { leaseMs?: number; operationId?: string }): AdmitResult;
+  admit(instance: InstanceFence & { leaseMs?: number; operationId?: string; module?: string }): AdmitResult;
   markSubmitting(input: MarkSubmittingInput): Promise<SubmitIntent>;
   attachReceipt(input: AttachReceiptInput): Promise<AttemptRecord>;
   reconcile(input: ReconcileInput): Promise<AttemptRecord>;

@@ -219,6 +219,32 @@ try {
   }
 
   {
+    const { db, execution } = await setup('module-fairness');
+    upsertExecutionPool(db, {
+      poolKey: 'shared', kind: 'remote', capacity: 1, enabled: true,
+      mappingSnapshot: { providerId: 'provider-a' }, expectedVersion: 0,
+    });
+    for (const actorId of ['member-a', 'member-b']) {
+      updateActorPolicy(db, { actorId, monthlyLimitMinor: 1_000, personalConcurrency: 1, paused: false, expectedVersion: 0 });
+    }
+    execution.enqueue(operation('member-a', 'unrelated'));
+    for (const [actorId, taskId] of [['member-a', 'a1'], ['member-a', 'a2'], ['member-b', 'b1']] as const) {
+      execution.enqueue({ ...operation(actorId, taskId), module: 'one-click-film-cover',
+        operationKey: `one-click-film-cover/${taskId}/submit/r1` });
+    }
+    for (const taskId of ['a1', 'b1', 'a2']) {
+      const admission = execution.admit({ ...identity, module: 'one-click-film-cover' });
+      assert.equal(admission.kind, 'admitted');
+      if (admission.kind !== 'admitted') break;
+      assert.equal(admission.grant.operation.taskId, taskId, '每次只有一个池名额时仍按成员轮转');
+      await execution.settle({ attemptId: admission.grant.attempt.id, outcome: 'succeeded',
+        remoteTerminal: true, actualCost: { currency: 'CNY', minor: 100 } });
+    }
+    const unrelated = execution.admit(identity);
+    assert.equal(unrelated.kind === 'admitted' && unrelated.grant.operation.taskId, 'unrelated');
+  }
+
+  {
     const { db, execution } = await setup('atomic-limits');
     for (const [poolKey, capacity] of [['shared', 10], ['second', 0]] as const) {
       upsertExecutionPool(db, {
