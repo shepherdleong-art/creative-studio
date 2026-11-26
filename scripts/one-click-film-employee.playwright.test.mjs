@@ -1,4 +1,4 @@
-// 第 16 票。npm run build 后运行 node scripts/one-click-film-employee.playwright.test.mjs。
+// npm run build 后运行 node scripts/one-click-film-employee.playwright.test.mjs。
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -30,7 +30,14 @@ const ffprobePath = process.env.CREATIVE_STUDIO_FFPROBE || ffprobe.path;
 const native = (exe, args) => execFileSync(exe, args, { windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
 const submitted = [];
 const calls = new Map();
+const autoRequests = [];
+const imageRequests = [];
 const localErrors = [];
+const cosOrigin = 'https://cos.fixture.localhost';
+const coverChannel = 'company-gateway-qiniuyun-gpt-image-2-6-flare';
+const coverModel = 'qiniuyun/gpt-image-2.6-flare';
+const coverColors = ['#4c2774', '#317951'];
+const coverPreference = '窗边柔光，产品居中偏下。';
 let app, browser, fixture, page;
 let serverLog = '';
 let startupLog = '';
@@ -66,7 +73,7 @@ function fixtureJson(request, response, json) {
   response.end(JSON.stringify(json));
 }
 
-function fixtures() {
+async function fixtures() {
   const assets = new Map();
   for (const [name, size] of [['draft', '216x288'], ['hd', '270x360']]) {
     const original = path.join(root, `${name}.mp4`);
@@ -81,13 +88,36 @@ function fixtures() {
   assets.set('redraw.mp4', redraw);
   const music = path.join(root, 'fixture-bgm.wav');
   ff(['-f', 'lavfi', '-i', 'sine=frequency=550:sample_rate=48000:duration=18', music]);
-  return { assets, music };
+  const covers = await Promise.all(coverColors.map(background =>
+    sharp({ create: { width: 540, height: 720, channels: 3, background } }).png().toBuffer()));
+  return { assets, music, covers };
 }
 
 function mockProvider(media) {
+  const objects = new Map();
+  const imageJobs = new Map();
+  const referenceDigest = value => {
+    const signed = new URL(value);
+    assert.equal(signed.origin, cosOrigin);
+    assert.ok(/^[a-f0-9]{40}$/.test(signed.searchParams.get('q-signature') ?? ''), '参考图读取缺少有效签名');
+    const uploaded = objects.get(signed.pathname);
+    assert.ok(uploaded, '供应商收到已上传的参考图');
+    return digest(uploaded);
+  };
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
+      if (req.method === 'GET' && url.pathname === '/health/liveliness') {
+        fixtureJson(req, res, { status: 'ok' });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/media/cover-')) {
+        const bytes = media.covers[Number(path.basename(url.pathname, '.png').slice(6))];
+        assert.ok(bytes, '未知的封面图片样本');
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': bytes.length });
+        res.end(bytes);
+        return;
+      }
       if (url.pathname.startsWith('/media/')) {
         const file = media.assets.get(path.basename(url.pathname));
         if (!file) throw new Error('未知媒体样本');
@@ -103,15 +133,61 @@ function mockProvider(media) {
           content: { video_url: `http://127.0.0.1:${fixture.address().port}/media/${job.media}` } });
         return;
       }
+      if (req.method === 'GET' && url.pathname.startsWith('/v1/videos/')) {
+        const job = imageJobs.get(path.basename(url.pathname));
+        assert.ok(job, '必须轮询已受理的生图任务');
+        job.polls += 1;
+        fixtureJson(req, res, job.polls === 1 ? { id: job.id, status: 'processing' } : {
+          id: job.id, status: 'completed',
+          metadata: { url: `http://127.0.0.1:${fixture.address().port}/media/cover-${job.index}.png` },
+        });
+        return;
+      }
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
+      const bytes = Buffer.concat(chunks);
+      if (url.pathname.startsWith('/cos/')) {
+        assert.ok(/(?:^|&)q-signature=[a-f0-9]{40}$/.test(req.headers.authorization ?? ''), 'COS 请求缺少有效签名');
+        if (req.method === 'GET') {
+          assert.equal(req.headers.range, 'bytes=0-0');
+          const exists = objects.has(url.pathname.slice(4));
+          res.writeHead(exists ? 206 : 404);
+          res.end(exists ? objects.get(url.pathname.slice(4)).subarray(0, 1) : undefined);
+        } else {
+          assert.equal(req.method, 'PUT');
+          assert.equal(req.headers['content-type'], 'image/png');
+          assert.match(path.basename(url.pathname), new RegExp(`^${digest(bytes)}\\.png$`));
+          objects.set(url.pathname.slice(4), bytes);
+          res.writeHead(200).end();
+        }
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
         fixtureJson(req, res, { text: '这是原片旁白。', words: [
           { word: '这是', start: 1, end: 1.3 }, { word: '原片旁白。', start: 1.3, end: 2.8 },
         ] });
         return;
       }
-      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const body = JSON.parse(bytes.toString());
+      if (req.method === 'POST' && url.pathname === '/v1/videos') {
+        assert.equal(body.model, coverModel);
+        assert.equal(body.response_format, 'png');
+        assert.equal(body.size, '1440x1920');
+        assert.match(body.prompt, /云朵床.*3:4/);
+        assert.match(body.prompt, /米白布艺靠背和卧室/);
+        assert.match(body.prompt, /窗边卧室/);
+        assert.match(body.prompt, /顶部约 30% 留白/);
+        assert.match(body.prompt, /不要生成装饰文字/);
+        assert.ok(body.prompt.includes(coverPreference));
+        assert.equal(body.images.length, 2);
+        const referenceDigests = body.images.map(referenceDigest);
+        const index = imageRequests.length;
+        const id = `cover-fixture-${index + 1}`;
+        imageJobs.set(id, { id, index, polls: 0 });
+        imageRequests.push({ referenceDigests });
+        fixtureJson(req, res, { id, status: 'queued' });
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/contents/generations/tasks') {
         const id = `film-fixture-${submitted.length + 1}`;
         const prompt = body.content.find((item) => item.type === 'text')?.text;
@@ -121,6 +197,10 @@ function mockProvider(media) {
         const isCandidate = draft?.isCandidate ?? (typeof prompt === 'string' && prompt.includes('重新生成正文第'));
         const mediaName = prompt?.includes('整条重抽') ? 'redraw.mp4' : `${draftId ? 'hd' : 'draft'}${isCandidate ? '-candidate' : ''}.mp4`;
         const info = { id, media: mediaName, isCandidate, request: body, prompt, draftId };
+        if (isCandidate && !draftId) {
+          const reference = body.content.find(item => item.type === 'image_url');
+          info.referenceDigest = referenceDigest(reference?.image_url?.url);
+        }
         calls.set(id, info);
         submitted.push(info);
         fixtureJson(req, res, { id, status: 'queued' });
@@ -129,8 +209,21 @@ function mockProvider(media) {
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const user = body.messages.find((message) => message.role === 'user')?.content;
         const text = typeof user === 'string' ? user : user.find((item) => item.type === 'text')?.text;
+        const task = JSON.parse(text);
+        if (task.task === 'select_product_panorama_cover_frame') {
+          autoRequests.push(task.entryCode);
+          assert.equal(task.productName, '云朵床');
+          assert.equal(task.candidates.length, user.filter(item => item.type === 'image_url').length);
+          if (task.entryCode === 'F02') {
+            res.writeHead(451, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { code: '451', message: 'response filtered by content management policy' } }));
+          } else {
+            fixtureJson(req, res, { choices: [{ message: { content: JSON.stringify({ candidate: 2 }) } }] });
+          }
+          return;
+        }
         if (text.includes('analyze_product_material_for_short_video')) {
-          const analysis = JSON.parse(text);
+          const analysis = task;
           assert.equal(user.filter((item) => item.type === 'image_url').length, analysis.tileCount);
           if (analysis.imageCount === 3) {
             res.writeHead(451, { 'Content-Type': 'application/json' });
@@ -146,7 +239,7 @@ function mockProvider(media) {
               { text: '软包靠背可倚靠', kind: 'claim', sourcePageIndex: analysis.imageCount - 1, tileRefs: ['tile_1'] }],
           }) } }] });
         } else {
-          const script = JSON.parse(text);
+          const script = task;
           assert.equal(script.task, 'write_one_click_film_script');
           const take = script.previous ? '重写稿' : '初稿';
           fixtureJson(req, res, { choices: [{ message: { content: JSON.stringify({
@@ -202,6 +295,38 @@ function pixelFrames(file) {
 }
 function pixelsNear(left, right, tolerance = 6) {
   return left.length === right.length && [...left].every((value, index) => Math.abs(value - right[index]) <= tolerance);
+}
+const rgb = hex => Buffer.from(hex.slice(1), 'hex');
+const dataImage = url => Buffer.from(url.split(',')[1], 'base64');
+async function coverHasColor(bytes, expected) {
+  const pixel = await sharp(bytes).removeAlpha().resize(1, 1).raw().toBuffer();
+  return pixelsNear(pixel, rgb(expected), 8);
+}
+function assertCoveredExport(file, coverColor, bodyFile) {
+  const streams = metadata(file).streams;
+  const video = streams.find(stream => stream.codec_type === 'video');
+  assert.equal(video.avg_frame_rate, '24/1');
+  assert.equal(Number(video.nb_read_frames), 380);
+  assert.ok(streams.some(stream => stream.codec_type === 'audio'));
+  assertContinuousAudio(file, 20 / 24, true);
+  const pixels = pixelFrames(file);
+  for (let frame = 0; frame < 20; frame += 1) {
+    assert.ok(pixelsNear(pixels.subarray(frame * 3, frame * 3 + 3), coverColor, 14), `片头第 ${frame} 帧须呈现选定封面`);
+  }
+  const framePixels = ff(['-ss', String(10 / 24), '-i', file, '-frames:v', '1', '-an',
+    '-vf', 'scale=90:120', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1']);
+  assert.equal(framePixels.length, 90 * 120 * 3);
+  let overlayPixels = 0;
+  for (let pixel = 0; pixel < 90 * 60; pixel += 1) {
+    if (!pixelsNear(framePixels.subarray(pixel * 3, pixel * 3 + 3), coverColor, 28)) overlayPixels += 1;
+  }
+  assert.ok(overlayPixels > 30, `片头中点须呈现包装标题，差异像素 ${overlayPixels}`);
+  const body = pixelFrames(bodyFile);
+  for (const frame of [0, 143, 144, 215, 216, 359]) {
+    assert.ok(pixelsNear(pixels.subarray((frame + 20) * 3, (frame + 21) * 3), body.subarray(frame * 3, (frame + 1) * 3), 14),
+      `导出第 ${frame + 20} 帧须呈现正文第 ${frame} 帧`);
+  }
+  return { fps: video.avg_frame_rate, frames: Number(video.nb_read_frames), introOverlayPixels: overlayPixels };
 }
 function assertLocalEdit(original, edited) {
   const before = pixelFrames(original);
@@ -337,7 +462,7 @@ async function assertOtherSoundModes(media) {
 }
 
 try {
-  const media = fixtures();
+  const media = await fixtures();
   fixture = mockProvider(media);
   const fixturePort = await listen(fixture);
   const probe = net.createServer();
@@ -345,6 +470,21 @@ try {
   await new Promise((resolve) => probe.close(resolve));
   const base = `http://127.0.0.1:${port}`;
   const vendor = `http://127.0.0.1:${fixturePort}`;
+  fs.writeFileSync(path.join(root, 'config.yaml'), 'model_list: []\n');
+  fs.mkdirSync(path.join(root, 'storage', 'run'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'storage', 'run', 'stack.json'), JSON.stringify({
+    litellmPid: process.pid, proxyPort: fixturePort, startedAt: new Date().toISOString(),
+  }));
+  // Keep signing and transport in production code. Redirect only the test COS origin to the fixture.
+  const cosTransport = path.join(root, 'cos-transport.cjs');
+  fs.writeFileSync(cosTransport, `
+    const fetchOriginal = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if (url.origin !== ${JSON.stringify(cosOrigin)}) return fetchOriginal(input, init);
+      return fetchOriginal(${JSON.stringify(vendor + '/cos')} + url.pathname + url.search, { ...init, redirect: 'error' });
+    };
+  `);
   const env = Object.fromEntries(['Path', 'PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'LOCALAPPDATA', 'USERPROFILE', 'ProgramFiles']
     .filter((key) => process.env[key]).map((key) => [key, process.env[key]]));
   // Exercise the render-only retry once, then let the real HyperFrames CLI produce the overlay.
@@ -359,13 +499,15 @@ try {
     }
   `);
   Object.assign(env, {
-    NODE_OPTIONS: [path.join(repo, 'scripts', 'team-server', 'no-external-network.cjs'), portFailure]
+    NODE_OPTIONS: [path.join(repo, 'scripts', 'team-server', 'no-external-network.cjs'), portFailure, cosTransport]
       .map((file) => '--require=' + JSON.stringify(file)).join(' '),
     NEXT_TELEMETRY_DISABLED: '1', HOSTNAME: '127.0.0.1', PORT: String(port),
     CREATIVE_STUDIO_DATA_ROOT: root, CREATIVE_STUDIO_DEPLOYMENT_MODE: 'server',
     CREATIVE_STUDIO_PORT: String(port), CREATIVE_STUDIO_DEPLOYMENT_ID: 'one-click-film-employee',
     CREATIVE_STUDIO_TRUSTED_ORIGIN: base, CREATIVE_STUDIO_TEAM_LOCAL_HTTP: '1',
     CREATIVE_STUDIO_LITELLM_PORT: String(fixturePort),
+    CREATIVE_STUDIO_COS_DOMAIN: new URL(cosOrigin).hostname,
+    CREATIVE_STUDIO_COS_SECRET_ID: 'isolated-film-cos-id', CREATIVE_STUDIO_COS_SECRET_KEY: 'isolated-film-cos-key',
     CREATIVE_STUDIO_EXPORT_ENCODER: 'cpu', CREATIVE_STUDIO_FFMPEG: ffmpegPath, CREATIVE_STUDIO_FFPROBE: ffprobePath,
     FINAL_EDIT_ALIGNMENT_BASE_URL: vendor, FINAL_EDIT_ALIGNMENT_API_KEY: 'isolated-film-fixture',
   });
@@ -389,6 +531,9 @@ try {
       VALUES ('film-video','验收 Seedance 2.5','jimeng','','','','doubao-seedance-2-5-260628',?,'isolated-film-fixture')`).run(vendor);
     db.prepare(`INSERT INTO script_providers (id,name,type,apiStyle,baseUrl,apiKey,model,enabled,supportsVision,isBuiltin)
       VALUES ('film-vision','00 验收识图与脚本','openai-compatible','openai-compatible',?,'isolated-film-fixture','film-vision',1,1,0)`).run(vendor);
+    db.prepare(`INSERT INTO providers (id,name,type,baseUrl,apiKey,model,enabled)
+      VALUES (?, '验收 GPT Image 2.6 Flare', 'gateway-task-image', ?, 'isolated-film-image', ?, 1)
+      ON CONFLICT(id) DO UPDATE SET baseUrl=excluded.baseUrl, apiKey=excluded.apiKey, enabled=1`).run(coverChannel, vendor, coverModel);
   } finally { db.close(); }
   const api = createUiAcceptanceApi(base);
   const admin = await api.activate('film-admin', credential, randomUUID());
@@ -401,12 +546,13 @@ try {
   });
   changes.push({ action: 'bind-media-upstream', entityType: 'video', entityId: 'film-video',
     poolKey: 'media:one-click-film-fixture', capacity: 4, expectedVersion: 0 });
+  changes.push({ action: 'bind-media-upstream', entityType: 'image', entityId: coverChannel,
+    poolKey: 'media:one-click-film-cover-fixture', capacity: 4, expectedVersion: 0 });
   await api.json(admin, '/api/team/pools', 'POST', { changes });
   const employee = async (id, displayName) => {
     const created = await api.json(admin, '/api/team/users', 'POST', { employeeId: id, displayName, role: 'employee' }, 201);
     if (id === 'film-employee') {
-      // Fixture providers intentionally have no paid price. Exercise the normal
-      // administrator policy path for this isolated employee.
+      // The script and video fixtures have no configured price. Set policy through the admin API.
       const endpoint = `/api/team/members/${created.user.id}/policy`;
       const policy = await api.json(admin, endpoint);
       await api.json(admin, endpoint, 'PATCH', {
@@ -472,8 +618,10 @@ try {
       await expect(region).toHaveAttribute('data-drag-over', 'false');
     } finally { await transfer.dispose(); }
   };
-  await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', await image('#667788'));
-  await dropImage(page.getByRole('region', { name: '详情页', exact: true }), '详情样图.png', await image('#aa8866'));
+  const sceneImage = await image('#667788');
+  const detailImage = await image('#aa8866');
+  await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', sceneImage);
+  await dropImage(page.getByRole('region', { name: '详情页', exact: true }), '详情样图.png', detailImage);
   await page.getByLabel('添加详情页').setInputFiles({ name: '待移除.png', mimeType: 'image/png', buffer: await image('#cccccc') });
   await page.getByRole('button', { name: '移除 待移除.png' }).click();
   await expect(page.getByRole('img', { name: '待移除.png' })).toHaveCount(0);
@@ -512,7 +660,7 @@ try {
   await expect(page.getByText('场景样图.png', { exact: true })).toHaveCount(0);
   await expect(page.getByText('审核样图.png', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '回到上传素材', exact: true }).click();
-  await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', await image('#667788'));
+  await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', sceneImage);
   await expect(page.getByRole('button', { name: '分析 2 份素材' })).toBeEnabled();
   await page.getByRole('button', { name: '查看已有结果' }).click();
   const analyzed = page.waitForResponse(analysisPost);
@@ -521,6 +669,7 @@ try {
   const analysisResult = await analysisResponse.json();
   assert.equal(analysisResponse.ok(), true, analysisResult.message);
   assert.equal(analysisResult.analysis.sourceImageIds.length, 2, '重新分析必须使用当前全部素材');
+  await expect(page.getByText('分析 v3', { exact: true })).toBeVisible();
   await expect(page.getByText('坐到床边放松', { exact: true }).or(page.locator('input[value="坐到床边放松"]')).first()).toBeVisible();
   await page.getByTestId('one-click-film-confirm').click();
   console.log('通过：上传页无需勾选；451 显示审核原因并保留原图；分析和重新分析使用当前全部素材，单张详情页支持功能卖点。');
@@ -584,6 +733,36 @@ try {
   const openPackaging = (code) => page.getByRole('button', { name: `打开 ${code} 预览与编辑` }).click();
   await expect(preview).toBeVisible();
   await assertPlayable(preview);
+  stage = '自动挑选全景与 451 回退';
+  const packagingEndpoint = `/api/one-click-film/${projectId}/packaging`;
+  const readPackaging = () => api.json(member, packagingEndpoint).then(result => result.packaging);
+  const packagingState = async code => (await readPackaging()).find(item => item.entryCode === code);
+  const waitForAuto = (code, status) => expect.poll(async () => (await packagingState(code))?.autoCover?.status,
+    { timeout: 90_000 }).toBe(status);
+  await waitForAuto('F01', 'ready');
+  await waitForAuto('F02', 'fallback');
+  const initialF01 = (await packagingState('F01')).autoCover;
+  const initialF02 = (await packagingState('F02')).autoCover;
+  assert.ok(initialF01.media.frame >= 144 && initialF01.media.frame < 216);
+  assert.equal(initialF02.reason, 'content_filtered');
+  assert.equal(initialF02.media.frame, 0);
+  assert.deepEqual(autoRequests.toSorted(), ['F01', 'F02']);
+  assert.equal(imageRequests.length, 0, '原片生成不得自动触发生图');
+  assert.ok(await coverHasColor(await responseBytes(`${packagingEndpoint}?cover=F01`), '#f0f0f0'), 'F01 自动封面来自第二镜');
+  assert.ok(await coverHasColor(await responseBytes(`${packagingEndpoint}?cover=F02`), '#102040'), 'F02 自动封面回退到首帧');
+  await page.getByRole('tab', { name: '花字包装', exact: true }).click();
+  await expect(page.getByText('默认首帧', { exact: true })).toBeVisible();
+  await page.getByRole('region', { name: '封面底图' }).getByRole('button', { name: '更换封面' }).click();
+  const retryAuto = page.getByRole('button', { name: '重新自动挑选', exact: true });
+  await expect(retryAuto).toBeEnabled();
+  await retryAuto.click();
+  await expect.poll(async () => (await packagingState('F02')).autoCover.attempt).toBe(initialF02.attempt + 1);
+  await waitForAuto('F02', 'fallback');
+  await expect(page.getByText('视觉服务内容审核未通过，使用正文首帧。', { exact: true })).toBeVisible();
+  assert.deepEqual(autoRequests.toSorted(), ['F01', 'F02', 'F02']);
+  await page.getByRole('tab', { name: '镜头', exact: true }).click();
+  console.log('通过：员工自动封面选中第二镜，451 回退正文首帧，显式重挑后仍可进入审片。');
+  stage = '真实切点调整';
   const originalUrl = await preview.getAttribute('src');
   const original = path.join(root, 'original-f02.mp4');
   fs.writeFileSync(original, await responseBytes(originalUrl));
@@ -651,8 +830,7 @@ try {
   await page.getByLabel('返工参考素材').selectOption({ label: '场景样图.png' });
   await page.getByRole('button', { name: '重新生成片段' }).click();
   await page.getByRole('button', { name: /候选 1 · 可预览/ }).waitFor({ timeout: 120_000 });
-  const sentReference = submitted.at(-1).request.content.find((item) => item.type === 'image_url');
-  assert.ok(sentReference?.image_url?.url.startsWith('data:image/png;base64,'), '补拍收到字节格式匹配的 PNG 参考');
+  assert.equal(submitted.at(-1).referenceDigest, digest(sceneImage), '补拍收到字节格式匹配的 PNG 参考');
   await page.getByRole('button', { name: '循环预览接缝' }).click();
   await expect(page.getByLabel('接缝预览')).toBeVisible();
   const inspector = page.getByRole('region', { name: '审片操作' });
@@ -705,6 +883,10 @@ try {
   fs.writeFileSync(adopted, await responseBytes(adoptedUrl));
   assertLocalEdit(original, adopted);
   assertContinuousAudio(adopted, 0);
+  await expect.poll(async () => (await packagingState('F02')).autoCover.sourceSignature).not.toBe(initialF02.sourceSignature);
+  await waitForAuto('F02', 'fallback');
+  assert.equal((await packagingState('F02')).autoCover.media.frame, 0);
+  assert.ok(await coverHasColor(await responseBytes(`${packagingEndpoint}?cover=F02`), '#102040'), '局部返工不改变 F02 的首帧颜色');
   await page.getByRole('button', { name: '撤销替换' }).click();
   await expect(preview).toHaveAttribute('src', originalUrl);
   await page.getByText('剪辑历史', { exact: true }).click();
@@ -764,7 +946,6 @@ try {
   await expect(page.locator('article video')).toHaveCount(0);
   if (output) await page.screenshot({ path: path.join(output, 'ui-packaging-cards.png'), animations: 'disabled' });
   await page.getByTestId('one-click-film-package').click();
-  const readPackaging = () => api.json(member, `/api/one-click-film/${projectId}/packaging`).then((result) => result.packaging);
   await expect.poll(async () => (await readPackaging()).length).toBe(2);
   assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').title, scriptTitle);
   assert.ok((await readPackaging()).every((item) => item.status === 'pending' && !item.videoUrl));
@@ -888,10 +1069,66 @@ try {
   const savedCover = page.getByRole('button', { name: '打开 F02 预览与编辑' }).locator('img');
   await expect(savedCover).toHaveAttribute('src', /\/packaging\?cover=F02/);
   const savedCoverUrl = await savedCover.getAttribute('src');
-  assert.deepEqual(await responseBytes(savedCoverUrl), Buffer.from(chosenCover.split(',')[1], 'base64'));
+  assert.deepEqual(await responseBytes(savedCoverUrl), dataImage(chosenCover));
   assert.ok([403, 404].includes((await api.raw(stranger, savedCoverUrl)).status), '成片封面必须拒绝无权限员工');
+  stage = 'GPT Image 2.6 候选生成、采用及入账';
   await openPackaging('F01');
+  await expect(coverLayer).toBeVisible();
+  await coverTrack.getByRole('button', { name: '封面', exact: true }).click();
+  await expect(coverPanel.getByText('自动挑帧', { exact: true })).toBeVisible();
+  const aiTab = coverPanel.getByRole('tab', { name: 'AI 生成全景', exact: true });
+  await aiTab.click();
+  const generator = coverPanel.getByRole('tabpanel', { name: 'AI 生成全景' });
+  const generateCover = generator.getByRole('button', { name: '生成全景封面', exact: true });
+  const chooseGenerated = number => generator.getByRole('button', { name: `采用 AI 封面 ${number}` });
+  await expect(generator.getByRole('combobox', { name: '生成通道' })).toHaveValue(coverChannel);
+  await expect(generator.getByRole('checkbox', { name: '场景样图.png' })).toBeChecked();
+  await generator.getByRole('checkbox', { name: '详情样图.png' }).check();
+  await expect(generator.getByText(/顶部约 30% 留白/)).toBeVisible();
+  await generator.getByRole('textbox', { name: '构图偏好' }).fill(coverPreference);
+  await assertReachable(aiTab, generateCover);
+  const priorAuto = (await packagingState('F01')).options.coverMedia;
+  assert.equal(priorAuto.kind, 'auto_frame');
+  assert.equal(imageRequests.length, 0);
+  const readCandidates = () => api.json(member, `${packagingEndpoint}?coverCandidates=F01`).then(result => result.coverCandidates);
+  for (const number of [1, 2]) {
+    await generateCover.click();
+    await expect(generator.getByRole('group', { name: '全景封面候选' }).getByRole('status')).toBeVisible();
+    await expect.poll(async () => (await readCandidates())[number - 1]?.status ?? '',
+      { timeout: 120_000 }).toMatch(/^(ready|failed)$/);
+    const candidate = (await readCandidates())[number - 1];
+    assert.equal(candidate.status, 'ready', candidate.message);
+    await expect(chooseGenerated(number)).toBeEnabled();
+  }
+  assert.deepEqual(imageRequests.map(item => item.referenceDigests), Array.from({ length: 2 }, () => [digest(sceneImage), digest(detailImage)]));
+  assert.deepEqual((await packagingState('F01')).options.coverMedia, priorAuto, '生成候选不得改写草稿');
+  const coverCandidates = await readCandidates();
+  assert.equal(coverCandidates.length, 2);
+  for (const [index, candidate] of coverCandidates.entries()) {
+    await chooseGenerated(index + 1).click();
+    await expect(chooseGenerated(index + 1)).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(async () => coverHasColor(dataImage(await coverLayer.getAttribute('src')), coverColors[index])).toBe(true);
+    assert.equal((await api.raw(stranger, candidate.imageUrl)).status, 403);
+  }
+  const f01Candidate = coverCandidates[1];
+  const generatedPreview = await coverLayer.getAttribute('src');
+  const usageModule = 'one-click-film-cover';
+  await expect.poll(async () => {
+    const { items } = await api.json(member, '/api/usage/records?pageSize=100');
+    return items.filter(item => item.refType === usageModule)
+      .map(item => [item.refId, item.costMicros, item.quantity, item.projectId]).toSorted();
+  }).toEqual(coverCandidates.map(item => [item.id, 490000, 1, projectId]).toSorted());
+  const memberUsage = await api.json(member, '/api/team/usage?period=month');
+  assert.equal(memberUsage.member.modules.find(item => item.module === usageModule)?.chargedMinor, 98);
+  assert.equal(imageRequests.length, 2, '采用历史候选不得重复调用供应商');
+  await page.getByRole('button', { name: '保存草稿' }).click();
+  await expect(page.getByText('已保存草稿。')).toBeVisible();
+  const f01Draft = await packagingState('F01');
+  assert.deepEqual(f01Draft.options.coverMedia, { kind: 'generated_image', assetId: f01Candidate.id });
   await page.getByRole('button', { name: '选入导出' }).click();
+  const generatedCard = beforePackaging.locator('img');
+  await expect(generatedCard).toHaveAttribute('src', /\/packaging\?cover=F01/);
+  assert.deepEqual(await responseBytes(await generatedCard.getAttribute('src')), dataImage(generatedPreview));
   assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, true);
   await page.getByRole('button', { name: '全选可导出成片' }).click();
   const confirmExport = async () => {
@@ -928,27 +1165,80 @@ try {
     assert.equal(digest(await responseBytes(delivery.url)), delivery.checksum);
     const file = path.join(root, `${delivery.entryCode}-final.mp4`);
     fs.writeFileSync(file, bytes);
-    const streams = metadata(file).streams;
-    const video = streams.find((stream) => stream.codec_type === 'video');
-    assert.equal(video.avg_frame_rate, '24/1');
-    assert.equal(Number(video.nb_read_frames), 380);
-    assert.ok(streams.some((stream) => stream.codec_type === 'audio'));
-    assertContinuousAudio(file, 20 / 24, true);
     const expectedPackaging = delivery.entryCode === 'F02' ? f02Draft : autoCaption;
-    if (delivery.entryCode === 'F02') {
-      const pixels = pixelFrames(file);
-      const expectedCover = pixelFrames(media.assets.get('hd-candidate.mp4')).subarray(24 * 3, 25 * 3);
-      const expectedBody = pixelFrames(media.assets.get('hd.mp4')).subarray(0, 3);
-      for (let frame = 0; frame < 20; frame++) assert.ok(pixelsNear(pixels.subarray(frame * 3, frame * 3 + 3), expectedCover, 14), `封面第 ${frame} 帧来自采用的镜头`);
-      assert.ok(pixelsNear(pixels.subarray(60, 63), expectedBody, 14), '第 20 帧回到正文第 0 帧');
-      assert.deepEqual(delivery.versions.coverMedia, f02Draft.options.coverMedia);
-    }
+    const expectedCover = delivery.entryCode === 'F02' ? rgb('#6040c0') : rgb(coverColors[1]);
+    const bodyFile = path.join(root, `hd-${delivery.entryCode.toLowerCase()}-approved.mp4`);
+    const mediaCheck = assertCoveredExport(file, expectedCover, bodyFile);
+    assert.deepEqual(delivery.versions.coverMedia, expectedPackaging.options.coverMedia);
     const visual = assertPackagedVisuals(file, delivery.entryCode, expectedPackaging.pointCues[0]);
-    checked.push({ entry: delivery.entryCode, filename: path.basename(file), fps: video.avg_frame_rate,
-      frames: Number(video.nb_read_frames), sha256: delivery.checksum, ...visual });
+    checked.push({ entry: delivery.entryCode, filename: path.basename(file), sha256: delivery.checksum, ...mediaCheck, ...visual });
     files.push(file);
   }
   const oldF02 = deliveries.find((delivery) => delivery.entryCode === 'F02');
+  stage = '项目图片构图、保存及正式导出';
+  await openPackaging('F02');
+  await expect(coverLayer).toBeVisible();
+  await coverTrack.getByRole('button', { name: '封面', exact: true }).click();
+  const projectTab = coverPanel.getByRole('tab', { name: '项目图片', exact: true });
+  await projectTab.click();
+  const selectDetail = coverPanel.getByRole('button', { name: '详情页图 详情样图.png' });
+  const framingMode = page.getByRole('button', { name: '调整封面底图', exact: true });
+  await assertReachable(coverPanel.getByRole('button', { name: '更换封面' }), projectTab, selectDetail, framingMode);
+  const priorProjectPalette = await getPalette();
+  await selectDetail.click();
+  await expect(selectDetail).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(getPalette).not.toBe(priorProjectPalette);
+  await expect.poll(async () => coverHasColor(dataImage(await coverLayer.getAttribute('src')), '#aa8866')).toBe(true);
+  const projectPreview = await coverLayer.getAttribute('src');
+  await framingMode.click();
+  const framingSurface = page.getByRole('region', { name: '拖动封面底图' });
+  const zoom = page.getByRole('slider', { name: '封面缩放' });
+  const reset = page.getByRole('button', { name: '重置构图', exact: true });
+  const overlayMode = page.getByRole('button', { name: '编辑文字/贴纸', exact: true });
+  await expect(framingSurface).toBeVisible();
+  await expect(page.getByTitle('包装效果叠加层', { exact: true })).toHaveCSS('pointer-events', 'none');
+  await expect(zoom).toHaveValue('1');
+  await zoom.fill('1.5');
+  await expect(zoom).toHaveValue('1.5');
+  await assertReachable(zoom, reset, overlayMode);
+  const framedPreview = page.waitForResponse((response) => {
+    if (!response.url().endsWith(packagingEndpoint) || response.request().method() !== 'POST') return false;
+    const body = response.request().postDataJSON();
+    const framing = body.options?.coverMedia?.framing;
+    return body.action === 'preview' && framing?.scale === 1.5 && Math.abs(framing.offsetX) > 0;
+  });
+  await dragBy(framingSurface, 18, -10);
+  await overlayMode.click();
+  assert.ok((await framedPreview).ok(), '缩放与拖拽构图须同步到包装预览');
+  await expect(coverTitle).toBeVisible();
+  await framingMode.click();
+  await reset.click();
+  await expect(zoom).toHaveValue('1');
+  await expect(reset).toBeDisabled();
+  await overlayMode.click();
+  await expect(coverLayer).toHaveAttribute('src', projectPreview);
+  await page.getByRole('button', { name: '保存草稿' }).click();
+  await expect(page.getByText('已保存草稿。')).toBeVisible();
+  const projectDraft = await packagingState('F02');
+  assert.equal(projectDraft.options.coverMedia.kind, 'project_image');
+  assert.equal(projectDraft.options.coverMedia.framing, undefined);
+  await page.getByRole('button', { name: '选入导出' }).click();
+  await expect(savedCover).toHaveAttribute('src', /\/packaging\?cover=F02/);
+  assert.deepEqual(await responseBytes(await savedCover.getAttribute('src')), dataImage(projectPreview));
+  await confirmExport();
+  await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(3);
+  const projectDelivery = (await getExports()).find(item => item.entryCode === 'F02' && item.id !== oldF02.id);
+  assert.deepEqual(projectDelivery.versions.coverMedia, projectDraft.options.coverMedia);
+  const projectFile = path.join(root, 'F02-project-cover.mp4');
+  const projectBytes = await responseBytes(projectDelivery.url);
+  assert.equal(digest(projectBytes), projectDelivery.checksum);
+  fs.writeFileSync(projectFile, projectBytes);
+  const projectMediaCheck = assertCoveredExport(projectFile, rgb('#aa8866'), path.join(root, 'hd-f02-approved.mp4'));
+  files.push(projectFile);
+  checked.push({ entry: 'F02', filename: path.basename(projectFile), sha256: projectDelivery.checksum, ...projectMediaCheck });
+  console.log('通过：项目图片可缩放拖动和重置，三档双主题控件可达，成片卡片及正式片头使用保存封面。');
+
+  stage = '关闭封面仍保留已保存来源与历史交付';
   await openPackaging('F02');
   await page.getByLabel('F02 标题').fill('F02 第二版交付');
   await page.getByRole('checkbox', { name: '封面', exact: true }).uncheck();
@@ -957,12 +1247,12 @@ try {
   await page.getByLabel('显示口播字幕').uncheck();
   await page.getByRole('button', { name: '选入导出' }).click();
   await confirmExport();
-  await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(3);
+  await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(4);
   assert.equal(digest(await responseBytes(oldF02.url)), oldF02.checksum);
   const withoutCover = (await getExports()).find((item) => item.title === 'F02 第二版交付');
   assert.notEqual(withoutCover.checksum, oldF02.checksum);
   assert.equal(withoutCover.versions.coverEnabled, false);
-  assert.deepEqual(withoutCover.versions.coverMedia, oldF02.versions.coverMedia);
+  assert.deepEqual(withoutCover.versions.coverMedia, projectDelivery.versions.coverMedia);
   const noCoverFile = path.join(root, 'F02-no-cover.mp4');
   fs.writeFileSync(noCoverFile, await responseBytes(withoutCover.url));
   const noCoverStreams = metadata(noCoverFile).streams;
@@ -974,7 +1264,7 @@ try {
   const withoutCaptions = (await readPackaging()).find((item) => item.entryCode === 'F02');
   assert.equal(withoutCaptions.options.subtitles, false);
   assert.deepEqual(withoutCaptions.subtitleCues, f02Draft.subtitleCues, '关闭字幕导出仍保留已校对的字幕');
-  await expect(history).toHaveCount(3);
+  await expect(history).toHaveCount(4);
   for (const video of await history.filter({ hasText: 'F02' }).locator('video').all()) await assertPlayable(video);
   stage = '整条重抽的真实声音和实际切点';
   await page.getByRole('tab', { name: /审片/ }).click();
@@ -1002,6 +1292,12 @@ try {
   const redrawn = path.join(root, 'redrawn-f01.mp4');
   fs.writeFileSync(redrawn, await responseBytes(await preview.getAttribute('src')));
   assert.ok(tone(redrawn, 7.96, 770) > 250 && tone(redrawn, 7.96, 330) < 20, '整条重抽采用新的整条声音');
+  await expect.poll(async () => (await packagingState('F01')).autoCover.sourceSignature).not.toBe(initialF01.sourceSignature);
+  await waitForAuto('F01', 'ready');
+  const redrawnPackaging = await packagingState('F01');
+  assert.ok(redrawnPackaging.autoCover.media.frame >= 72 && redrawnPackaging.autoCover.media.frame < 192);
+  assert.deepEqual(redrawnPackaging.options.coverMedia, f01Draft.options.coverMedia, '整条重抽后保留手动采用的 AI 封面');
+  assert.ok(await coverHasColor(await responseBytes(`${packagingEndpoint}?cover=F01`), coverColors[1]), '重抽后的成片卡片保留生成封面');
   await page.getByRole('button', { name: '撤销替换' }).click();
   await expect(preview).toHaveAttribute('src', originalF01);
   assert.equal(digest(await responseBytes(oldF02.url)), oldF02.checksum);
@@ -1017,7 +1313,7 @@ try {
     }, null, 2));
     fs.rmSync(path.join(output, 'failure.png'), { force: true });
   }
-  console.log('第 16 票通过：员工首页 → 两条样片 → F02 只替换第 144–215 帧，330 Hz 原声跨接缝 → 三次来源转高清 → 实际包装并下载两条 24 fps / 380 帧 MP4，复查历史交付。');
+  console.log('员工验收通过：全景挑帧、451 回退、项目图构图、AI 候选采用与计费、返工联动，以及 24 fps / 380 帧正式交付和 ZIP 核验。');
 } catch (error) {
   if (page && output) {
     fs.mkdirSync(output, { recursive: true });
@@ -1035,7 +1331,7 @@ try {
     } catch { /* 尚未创建执行账本 */ }
     finally { diagnostics.close(); }
   }
-  console.error(`第 16 票停止在 ${stage}`, error, localErrors, (startupLog + '\n' + serverLog).replaceAll(root, '[验收数据根]'));
+  console.error(`员工验收停止在 ${stage}`, error, localErrors, (startupLog + '\n' + serverLog).replaceAll(root, '[验收数据根]'));
   throw error;
 } finally {
   await browser?.close();

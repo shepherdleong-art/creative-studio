@@ -579,11 +579,12 @@ try {
     '管理员也不能把别的项目素材放进当前批次');
   assert.equal((await analyzeAssets(write(analyzeUrl, userA.cookie, { assetIds: ['missing-asset'] }), params('batch-a'))).status, 404);
 
-  // 全景封面候选读取走真实项目 ACL 和受管文件，生成入口失权时不进入业务处理。
+  // 封面操作走真实项目 ACL、CSRF 和受管文件验证。
   const coverAssetRoute = await import('../app/api/one-click-film/[projectId]/cover-assets/[coverAssetId]/route.ts');
   const filmPackagingRoute = await import('../app/api/one-click-film/[projectId]/packaging/route.ts');
   const { getOneClickFilmReadiness } = await import('../lib/one-click-film/runtime-readiness.ts');
   const { getOrCreateRun } = await import('../lib/one-click-film/store.ts');
+  const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
   const { createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
   const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
   assert.equal((await getOneClickFilmReadiness()).available, true);
@@ -602,12 +603,17 @@ try {
     (id,runId,projectId,entryId,entryCode,status,requestKey,requestHash,providerId,model,referenceImagesJson,prompt,
       requestedSize,providerFingerprint,relativePath,width,height,createdAt,updatedAt)
     SELECT ?,runId,projectId,id,code,'ready',?,?, 'provider','model','[]','全景封面','864x1152','fingerprint',?,12,16,?,?
-    FROM one_click_film_entries WHERE id='film-project-a'`);
-  insertCover.run('cover-a', 'request-a', 'hash-a', 'film-cover.png', filmTime, filmTime);
+    FROM one_click_film_entries WHERE id=?`);
+  insertCover.run('cover-a', 'request-a', 'hash-a', 'film-cover.png', filmTime, filmTime, 'film-project-a');
+  const otherCoverPath = path.join(fixtureRoot, 'storage', 'film-cover-b.png');
+  fs.copyFileSync(filmCoverPath, otherCoverPath);
+  insertCover.run('cover-b', 'request-b', 'hash-b', 'film-cover-b.png', filmTime, filmTime, 'film-project-b');
   fs.copyFileSync(filmCoverPath, path.join(fixtureRoot, 'storage', 'unregistered-cover.png'));
-  insertCover.run('cover-unregistered', 'request-u', 'hash-u', 'unregistered-cover.png', filmTime, filmTime);
+  insertCover.run('cover-unregistered', 'request-u', 'hash-u', 'unregistered-cover.png', filmTime, filmTime, 'film-project-a');
   createTeamAccessContext({ db, principal: userA.principal }).registerFile!({ absolutePath: filmCoverPath, mimeType: 'image/png',
     references: [{ resourceType: 'project', resourceId: 'project-a', role: 'derivative' }] });
+  createTeamAccessContext({ db, principal: userB.principal }).registerFile!({ absolutePath: otherCoverPath, mimeType: 'image/png',
+    references: [{ resourceType: 'project', resourceId: 'project-b', role: 'derivative' }] });
   const readCover = (projectId: string, coverAssetId: string, cookie?: string, entryCode = 'F01') => coverAssetRoute.GET(
     new NextRequest(get(`https://studio.example.test/api/one-click-film/${projectId}/cover-assets/${coverAssetId}?entryCode=${entryCode}`, cookie)),
     { params: Promise.resolve({ projectId, coverAssetId }) });
@@ -617,16 +623,61 @@ try {
   assert.deepEqual(Buffer.from(await ownerCover.arrayBuffer()), fs.readFileSync(filmCoverPath));
   assert.equal((await readCover('project-a', 'cover-a')).status, 401);
   assert.equal((await readCover('project-a', 'cover-a', userB.cookie)).status, 403);
+  assert.equal((await readCover('project-b', 'cover-b', userB.cookie)).status, 200);
+  assert.equal((await readCover('project-b', 'cover-a', userB.cookie)).status, 404);
   assert.equal((await readCover('project-b', 'cover-a', admin.cookie)).status, 404);
   assert.equal((await readCover('project-a', 'cover-a', userA.cookie, 'F02')).status, 404);
   assert.equal((await readCover('project-a', 'cover-unregistered', userA.cookie)).status, 404);
   const coverActionUrl = 'https://studio.example.test/api/one-click-film/project-a/packaging';
-  const coverAction = { action: 'generate-cover', entryCode: 'F01', requestKey: 'matrix-cover-request' };
+  const generateCover = { action: 'generate-cover', entryCode: 'F01', requestKey: 'matrix-cover-request' };
+  const retryCover = { action: 'retry-auto-cover', entryCode: 'F01', sourceSignature: 'stale-signature', attempt: 1 };
+  const editCover = { action: 'edit', entryCode: 'F01', revision: 1, options: { coverMedia: { kind: 'generated_image', assetId: 'cover-a' } } };
   const postCover = (request: Request) => filmPackagingRoute.POST(new NextRequest(request), { params: Promise.resolve({ projectId: 'project-a' }) });
-  assert.equal((await postCover(new Request(coverActionUrl, { method: 'POST', headers: { Cookie: userA.cookie }, body: JSON.stringify(coverAction) }))).status, 403);
-  assert.equal((await postCover(write(coverActionUrl, userB.cookie, coverAction))).status, 403);
-  assert.equal((await postCover(write(coverActionUrl, userA.cookie, { ...coverAction, referenceImageIds: ['image-b'] }))).status, 403);
-  assert.equal((await postCover(write(coverActionUrl, userA.cookie, coverAction))).status, 404, '授权成功后才检查原片');
+  for (const action of [generateCover, retryCover, editCover]) {
+    const withoutCsrf = write(coverActionUrl, userA.cookie, action);
+    withoutCsrf.headers.delete('x-csrf-token');
+    assert.equal((await postCover(write(coverActionUrl, '', action))).status, 401);
+    assert.equal((await postCover(withoutCsrf)).status, 403);
+    assert.equal((await postCover(write(coverActionUrl, userB.cookie, action))).status, 403);
+  }
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, { ...generateCover, referenceImageIds: ['image-b'] }))).status, 403);
+  assert.equal((await postCover(write(coverActionUrl, admin.cookie, { ...generateCover, referenceImageIds: ['image-b'] }))).status, 403);
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, generateCover))).status, 404, '授权成功后才检查原片');
+  const filmRun = runWithAccessContext(createTeamAccessContext({ db, principal: userA.principal }), () => getOrCreateRun(db, 'project-a'));
+  db.prepare("UPDATE video_jobs SET localVideoPath='original.mp4' WHERE id='rework-original-video'").run();
+  db.prepare(`INSERT INTO one_click_film_video_jobs
+    (id, runId, projectId, entryId, entryCode, requestKey, shotSetId, shotId, videoJobId, status, createdAt, updatedAt)
+    VALUES ('film-job-a', ?, 'project-a', 'film-project-a', 'F01', 'film-request-a', 'rework-set-a',
+      'rework-shot-a', 'rework-original-video', 'succeeded', ?, ?)`).run(filmRun.id, filmTime, filmTime);
+  db.prepare(`INSERT INTO one_click_film_reviews (id, runId, videoJobId, entryId, entryCode, durationUs, createdAt, updatedAt)
+    VALUES ('film-review-a', ?, 'film-job-a', 'film-project-a', 'F01', 5000000, ?, ?)`).run(filmRun.id, filmTime, filmTime);
+  db.prepare(`INSERT INTO one_click_film_packaging (id, runId, entryId, entryCode, status, createdAt, updatedAt)
+    VALUES ('film-packaging-a', ?, 'film-project-a', 'F01', 'pending', ?, ?)`).run(filmRun.id, filmTime, filmTime);
+  const filmBody = readFilmBody(db, filmRun, 'F01')!;
+  db.prepare(`INSERT INTO one_click_film_auto_covers (entryId, sourceSignature, state, principalTaskId, frame, reason)
+    VALUES (?, ?, 'fallback', 'rework-original-video', 0, 'content_filtered')`).run(filmBody.entryId, filmBody.signature);
+  const readPackaging = (search: string, cookie?: string) => filmPackagingRoute.GET(
+    new NextRequest(get(`${coverActionUrl}?${search}`, cookie)), { params: Promise.resolve({ projectId: 'project-a' }) });
+  assert.equal((await readPackaging('autoCover=F01')).status, 401);
+  assert.equal((await readPackaging('autoCover=F01', userB.cookie)).status, 403);
+  const auto = await readPackaging('autoCover=F01', userA.cookie);
+  assert.equal(auto.status, 200, await auto.clone().text());
+  assert.equal((await auto.json()).record.autoCover.media.frame, 0);
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, retryCover))).status, 409, '已授权重挑需通过正文签名验证');
+  for (const options of [
+    { coverMedia: { kind: 'generated_image', assetId: 'cover-b' } },
+    { coverMedia: { kind: 'generated_image', assetId: 'cover-unregistered' } },
+    { coverMedia: { kind: 'project_image', assetId: 'image-b' } },
+  ]) {
+    assert.equal((await postCover(write(coverActionUrl, userA.cookie, { ...editCover, options }))).status, 400);
+    assert.equal((await postCover(write(coverActionUrl, admin.cookie, { ...editCover, options }))).status, 400);
+  }
+  const editedCover = await postCover(write(coverActionUrl, userA.cookie, editCover));
+  assert.equal(editedCover.status, 200, await editedCover.clone().text());
+  const [savedDraft] = (await editedCover.json()).packaging;
+  assert.equal(savedDraft.revision, 2);
+  assert.deepEqual(savedDraft.options.coverMedia, editCover.options.coverMedia);
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, editCover))).status, 409);
   for (const route of [
     '/api/projects/[id]/final-edit/draft',
     '/api/projects/[id]/final-edit/preflight',

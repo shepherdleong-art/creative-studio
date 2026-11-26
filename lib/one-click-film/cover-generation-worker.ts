@@ -147,7 +147,8 @@ async function generateCover(db: Database.Database, initial: FilmCoverAsset, sig
   const snapshot = JSON.parse(asset.usageSnapshotJson ?? 'null') as CoreUsageSnapshotV1 | null;
   if (!snapshot) return updateAsset(db, asset.id, 'failed', 'internal');
   const cost: Money = { currency: 'CNY', minor: Math.ceil(calculateUsageCostMicros(snapshot.priceComponents, 1) / 10_000) };
-  const operationKey = `${FILM_COVER_GENERATION_MODULE}/${asset.id}/generate`;
+  const inputRevision = '1';
+  const operationKey = `${FILM_COVER_GENERATION_MODULE}/${asset.id}/generate/${inputRevision}`;
   const operationId = runtime && (asset.operationId ?? db.prepare(`SELECT id FROM execution_operations WHERE actorId=? AND operationKey=?`)
     .pluck().get(access.actor.userId, operationKey) as string | undefined);
   const operation = operationId ? readOperation(db, operationId) : undefined;
@@ -195,7 +196,7 @@ async function generateCover(db: Database.Database, initial: FilmCoverAsset, sig
     const providerSnapshot = { providerId: provider.id, type: provider.type, model: provider.model, requestModel: provider.model, baseUrl: provider.baseUrl };
     const current = operation ?? runtime.facade.enqueue({
       operationKey, actor: { userId: access.actor.userId }, scope: { resourceType: 'project', resourceId: asset.projectId },
-      module: FILM_COVER_GENERATION_MODULE, taskId: asset.id, step: 'generate', inputRevision: '1',
+      module: FILM_COVER_GENERATION_MODULE, taskId: asset.id, step: 'generate', inputRevision,
       businessAttempt: { id: asset.id, number: 1 }, inputSnapshot: requestSnapshot, inputHash: sha256Canonical(requestSnapshot),
       continuationKey: `${FILM_COVER_GENERATION_MODULE}.generate`, providerSnapshot, configVersion: sha256Canonical(providerSnapshot),
       credentialVersionRef: asset.providerFingerprint, requiredPools: [ensureMediaProviderPool(db, provider.baseUrl, provider.apiKey)],
