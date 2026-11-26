@@ -177,6 +177,8 @@ function scanReferences(route: string, value: unknown, references: Array<{ resou
   }
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (key === 'assetId' && typeof item === 'string' && STICKER_INSTANCE_PATHS[route]?.includes(fieldPath)) continue;
+    // 一键成片按封面来源查项目图片或本模块候选并校验受管文件。
+    if (key === 'assetId' && route === '/api/one-click-film/[projectId]/packaging' && fieldPath === 'options.coverMedia') continue;
     const direct = ID_RESOURCES[key];
     const plural = ARRAY_ID_RESOURCES[key];
     if (direct) addReference(references, route, key, direct, item);

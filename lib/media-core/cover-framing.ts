@@ -29,6 +29,17 @@ export function coverFramingGeometry({ sourceWidth, sourceHeight, outputWidth, o
   };
 }
 
+/** Convert a drag in output pixels to the corresponding position inside the crop range. */
+export function panCoverFraming(input: Parameters<typeof coverFramingGeometry>[0], delta: { x: number; y: number }): CoverFraming {
+  const { resizedWidth, resizedHeight } = coverFramingGeometry(input);
+  const { framing, outputWidth, outputHeight } = input;
+  const pan = (offset: number, remaining: number, movement: number) =>
+    remaining > 0 ? Math.max(-1, Math.min(1, offset - 2 * movement / remaining)) : offset;
+  return { ...framing,
+    offsetX: pan(framing.offsetX, resizedWidth - outputWidth, delta.x),
+    offsetY: pan(framing.offsetY, resizedHeight - outputHeight, delta.y) };
+}
+
 export function coverSafeAreaRect(width: number, height: number) {
   const x = width * 0.04;
   const y = height * 0.04;

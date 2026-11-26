@@ -1,10 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import { resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film/cover-media';
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
-import { Tag } from '@/components/ui/Appearance';
+import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
 import type { FilmReview } from './ReviewStage';
+import { DETAIL_USAGE, SCENE_USAGE, type FilmImage } from './types';
 import styles from './one-click-film.module.css';
 
 const sourceLabel = (cover: FilmCoverMedia) => {
@@ -16,7 +18,7 @@ const sourceLabel = (cover: FilmCoverMedia) => {
   }
 };
 
-export function FilmCoverPanel({ media, frames, signature, shots, image, thumbnail, expanded, busy, canTakeCurrent,
+export function FilmCoverPanel({ media, frames, signature, shots, image, thumbnail, expanded, busy, canTakeCurrent, projectId, images,
   onToggle, onSelect, onTakeCurrent }: {
   media?: FilmCoverMedia;
   frames: number;
@@ -27,11 +29,15 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
   expanded: boolean;
   busy: boolean;
   canTakeCurrent: boolean;
+  projectId: string;
+  images: FilmImage[];
   onToggle: () => void;
   onSelect: (media?: FilmCoverMedia) => void;
   onTakeCurrent: () => void;
 }) {
   const cover = resolveFilmCoverMedia(media, { frames, signature });
+  const [sourceTab, setSourceTab] = useState<'video' | 'project'>(cover.kind === 'project_image' ? 'project' : 'video');
+  const projectImages = images.filter(item => item.usage === SCENE_USAGE || item.usage === DETAIL_USAGE);
   const frame = 'frame' in cover ? cover.frame : 0;
   const shotRows = shots.map(shot => {
     const first = Math.min(frames - 1, Math.round(shot.startUs * FINAL_EDIT_FPS / 1e6));
@@ -58,27 +64,47 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
     {media?.kind === 'video_frame' && media.frame !== frame ? <p className={styles.hint} role="status">原选帧超出正文，已定位到最后一帧。</p> : null}
     {expanded ? <>
       <div className={styles.inlineActions}>
-        <button type="button" className="cap" disabled={busy || !canTakeCurrent} onClick={onTakeCurrent}>取当前播放画面</button>
         <button type="button" className="cap" disabled={busy || !media} onClick={() => onSelect()}>恢复默认封面</button>
       </div>
-      <div className={styles.filmCoverShots} role="group" aria-label="本片画面">
-        {shotRows.map(row => {
-          const label = `镜头 ${String(row.shot.index).padStart(2, '0')}`;
-          return <button key={row.shot.id} type="button" aria-pressed={'frame' in cover && row === selected} disabled={busy}
-            className={styles.filmCoverShot} onClick={() => selectFrame(Math.floor((row.first + row.last) / 2), row.shot.id)}>
-            {row.image ? (
-              // eslint-disable-next-line @next/next/no-img-element -- 预览解码器的镜头缩略图
-              <img src={row.image} alt="" />
-            ) : <Icon name="image" size={18} />}
-            <span>{label}</span>
-          </button>;
-        })}
-      </div>
-      {selected ? <label className={styles.editRow}>封面帧 <output className="tnum">{(frame / FINAL_EDIT_FPS).toFixed(3)} 秒</output>
-        <input type="range" aria-label="封面帧" min={selected.first} max={selected.last} step={1}
-          value={Math.max(selected.first, Math.min(selected.last, frame))} disabled={busy || selected.first === selected.last}
-          onChange={event => selectFrame(event.target.valueAsNumber, selected.shot.id)} />
-      </label> : null}
+      <Segmented value={sourceTab} onChange={setSourceTab} size="small" label="封面来源"
+        options={[{ value: 'video', label: '本片画面' }, { value: 'project', label: '项目图片' }]} />
+      {sourceTab === 'video' ? <div className={styles.filmCoverPanelContent} role="tabpanel" aria-label="本片画面">
+        <div className={styles.inlineActions}>
+          <button type="button" className="cap" disabled={busy || !canTakeCurrent} onClick={onTakeCurrent}>取当前播放画面</button>
+        </div>
+        <div className={styles.filmCoverShots} role="group" aria-label="本片画面">
+          {shotRows.map(row => {
+            const label = `镜头 ${String(row.shot.index).padStart(2, '0')}`;
+            return <button key={row.shot.id} type="button" aria-pressed={'frame' in cover && row === selected} disabled={busy}
+              className={styles.filmCoverShot} onClick={() => selectFrame(Math.floor((row.first + row.last) / 2), row.shot.id)}>
+              {row.image ? (
+                // eslint-disable-next-line @next/next/no-img-element -- 预览解码器的镜头缩略图
+                <img src={row.image} alt="" />
+              ) : <Icon name="image" size={18} />}
+              <span>{label}</span>
+            </button>;
+          })}
+        </div>
+        {selected ? <label className={styles.editRow}>封面帧 <output className="tnum">{(frame / FINAL_EDIT_FPS).toFixed(3)} 秒</output>
+          <input type="range" aria-label="封面帧" min={selected.first} max={selected.last} step={1}
+            value={Math.max(selected.first, Math.min(selected.last, frame))} disabled={busy || selected.first === selected.last}
+            onChange={event => selectFrame(event.target.valueAsNumber, selected.shot.id)} />
+        </label> : null}
+      </div> : <div role="tabpanel" aria-label="项目图片">
+        {projectImages.length ? <div className={styles.filmCoverShots}>
+          {projectImages.map(item => {
+            const usage = item.usage === SCENE_USAGE ? '场景图' : '详情页图';
+            return <button type="button" key={item.id} className={styles.filmCoverShot} title={item.filename}
+              aria-label={`${usage} ${item.filename}`} aria-pressed={cover.kind === 'project_image' && cover.assetId === item.id}
+              disabled={busy} onClick={() => onSelect({ kind: 'project_image', assetId: item.id,
+                framing: cover.kind === 'project_image' && cover.assetId === item.id ? cover.framing : undefined })}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- 项目内的受权缩略图，避免加载原图 */}
+              <img src={`/api/one-click-film/${encodeURIComponent(projectId)}/packaging?coverThumbnail=${encodeURIComponent(item.id)}`} alt="" loading="lazy" />
+              <span>{usage}</span><span className={styles.filmCoverFilename}>{item.filename}</span>
+            </button>;
+          })}
+        </div> : <p className={styles.hint}>暂无项目图片。可在「素材与脚本」上传场景图或详情页图片。</p>}
+      </div>}
     </> : null}
   </section>;
 }

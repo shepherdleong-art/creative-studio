@@ -16,7 +16,7 @@ import { validatePackagingStickers } from '@/lib/media-core/packaging-stickers';
 import { isExecutionDeferredError, isExecutionUnknownError } from '@/lib/media-core/execution/waiting';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
-import { previewFilmCover } from '@/lib/one-click-film/cover-render';
+import { previewFilmCover, previewFilmCoverFramingSource, previewProjectCoverThumbnail } from '@/lib/one-click-film/cover-render';
 import { validateFilmCoverSelection } from '@/lib/one-click-film/cover-source';
 import { extractPackagingPalette, resolveTemplateHueMode } from '@/lib/media-core/packaging-palette';
 import { resolvePackagingDir, resolvePackagingTemplateDir } from '@/lib/media-core/packaging-runtime';
@@ -32,6 +32,11 @@ async function __teamRouteGET(
     const db = getDb();
     const access = requireAccessContext();
     if (access.kind === 'team') access.assertAccess('project', projectId, 'read');
+    const thumbnailId = request.nextUrl.searchParams.get('coverThumbnail');
+    if (thumbnailId !== null) {
+      const thumbnail = await previewProjectCoverThumbnail(db, projectId, thumbnailId);
+      return new NextResponse(new Uint8Array(thumbnail.jpeg), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' } });
+    }
     const run = getRunForProject(db, projectId);
     const coverCode = request.nextUrl.searchParams.get('cover');
     if (coverCode !== null) {
@@ -67,6 +72,16 @@ async function __teamRoutePOST(
     const body = await readJsonBody(request);
     const action = String(body.action ?? 'prepare');
     const entryCode = String(body.entryCode ?? '');
+
+    if (action === 'cover-framing-source') {
+      const saved = readFilmBody(db, run, entryCode);
+      if (!saved) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      const film = await playableFilmBody(saved);
+      const options = body.options && typeof body.options === 'object' ? body.options as Record<string, unknown> : {};
+      const coverMedia = validateFilmCoverSelection(db, run, film, options.coverMedia);
+      const source = await previewFilmCoverFramingSource(db, run, film, coverMedia);
+      return NextResponse.json({ image: `data:image/jpeg;base64,${source.jpeg.toString('base64')}`, width: source.width, height: source.height });
+    }
 
     if (action === 'edit') {
       if (typeof body.revision !== 'number' || !Number.isSafeInteger(body.revision) || body.revision < 1) {

@@ -22,11 +22,11 @@ export interface ComposeCoverInput {
 export async function composeCoverJpg(input: ComposeCoverInput): Promise<void> {
   const framing: CoverFraming = input.framing ?? { scale: 1, offsetX: 0, offsetY: 0 };
   const source = sharp(input.coverSourcePath).rotate();
-  const metadata = await source.metadata();
-  if (!metadata.width || !metadata.height) throw new Error('封面底图尺寸无效');
+  const { autoOrient: { width, height } } = await source.metadata();
+  if (!width || !height) throw new Error('封面底图尺寸无效');
   const { resizedWidth, resizedHeight, left, top } = coverFramingGeometry({
-    sourceWidth: metadata.width,
-    sourceHeight: metadata.height,
+    sourceWidth: width,
+    sourceHeight: height,
     outputWidth: input.output.width,
     outputHeight: input.output.height,
     framing,

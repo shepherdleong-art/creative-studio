@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import sharp from 'sharp';
 
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocf-delivery-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
@@ -19,6 +20,9 @@ const {
 const { packagingOverlayConfig, splitFilmCoverTitle, stickersForFilmPoints } = await import('../lib/one-click-film/packaging-edit.ts');
 const { exportEligibility, exportEntries, exportZipEntries, listExports } = await import('../lib/one-click-film/exports.ts');
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
+const { composeCoverJpg } = await import('../lib/media-core/cover-compose.ts');
+const { writeFilmCover } = await import('../lib/one-click-film/cover-render.ts');
+const { coverFramingGeometry, panCoverFraming } = await import('../lib/media-core/cover-framing.ts');
 
 // ── 时间基准：正文 0 秒 → 加封面后成片第 20 帧 ──
 assert.deepEqual(filmTimeForBodyTime(0, true), { sec: 0.833, frame: 20 });
@@ -75,7 +79,10 @@ db.exec(`
   CREATE TABLE video_jobs (
     id TEXT PRIMARY KEY, projectId TEXT, status TEXT, providerTaskId TEXT, localVideoPath TEXT, filmGenerationStage TEXT
   );
-  INSERT INTO projects (id, name) VALUES ('proj-1', '云朵床项目');
+  CREATE TABLE image_assets (
+    id TEXT PRIMARY KEY, projectId TEXT, role TEXT, usage TEXT, path TEXT, originalPath TEXT
+  );
+  INSERT INTO projects (id, name) VALUES ('proj-1', '云朵床项目'), ('proj-2', '另一个项目');
 `);
 await ensureOneClickFilmSchemaReady({ db, backupRoot: path.join(dataRoot, 'data', 'backups', 'schema-upgrades') });
 const run = getOrCreateRun(db, 'proj-1');
@@ -181,6 +188,51 @@ const clamped = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevisi
   options: { coverMedia: { kind: 'video_frame', frame: 1500 } },
 })[0]!;
 assert.deepEqual(clamped.options.coverMedia, { kind: 'video_frame', frame: 359 });
+
+// 素材与脚本中的托管图可用于封面，其他项目或缺失文件不会泄露路径。
+const imageDir = path.join(dataRoot, 'storage', 'originals');
+fs.mkdirSync(imageDir);
+const detailFile = path.join(imageDir, 'detail.jpg');
+await sharp({ create: { width: 4, height: 3, channels: 3, background: 'red' } }).jpeg().toFile(detailFile);
+const insertImage = db.prepare('INSERT INTO image_assets VALUES (?, ?, ?, ?, ?, ?)');
+insertImage.run('detail', 'proj-1', 'input', 'detail_page', detailFile, detailFile);
+insertImage.run('other-project', 'proj-2', 'input', 'detail_page', detailFile, detailFile);
+insertImage.run('different-usage', 'proj-1', 'input', 'other', detailFile, detailFile);
+insertImage.run('missing-file', 'proj-1', 'input', 'scene_seed', path.join(imageDir, 'missing.jpg'), null);
+const selectedImage = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 5,
+  options: { coverMedia: { kind: 'project_image', assetId: 'detail', framing: { scale: 5, offsetX: -8, offsetY: 6 } } },
+})[0]!;
+assert.deepEqual(selectedImage.options.coverMedia, { kind: 'project_image', assetId: 'detail', framing: { scale: 3, offsetX: -1, offsetY: 1 } });
+for (const assetId of ['other-project', 'different-usage', 'missing-file', '../detail.jpg']) {
+  assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 6,
+    options: { coverMedia: { kind: 'project_image', assetId } },
+  }), { status: 400, message: '当前封面图片不可用' });
+}
+assert.equal(listPackaging(db, run)[0]!.revision, 6, '拒绝非法封面引用时保留已保存修订');
+
+// EXIF 右转后，原图右侧的蓝色块位于底部；取景移到最下应仅保留蓝色。
+const orientedFile = path.join(imageDir, 'oriented.jpg');
+await sharp(Buffer.from(`<svg width="120" height="40"><path fill="red" d="M0 0h40v40H0z"/>
+  <path fill="green" d="M40 0h40v40H40z"/><path fill="blue" d="M80 0h40v40H80z"/></svg>`))
+  .withMetadata({ orientation: 6 }).jpeg().toFile(orientedFile);
+const cropFile = path.join(imageDir, 'cover-crop.jpg');
+await composeCoverJpg({ coverSourcePath: orientedFile, jpgPath: cropFile, output: { width: 36, height: 36 },
+  framing: { scale: 1, offsetX: 0, offsetY: 1 } });
+const crop = await sharp(cropFile).raw().toBuffer({ resolveWithObject: true });
+assert.equal(crop.info.width, 36);
+assert.equal(crop.info.height, 36);
+assert.ok(crop.data.every((pixel, index) => index % 3 === 2 ? pixel > 220 : pixel < 30), 'EXIF 方向矫正发生在取景之前');
+await assert.rejects(writeFilmCover({ bodyPath: path.join(videoDir, 'a.mp4'),
+  cover: { kind: 'project_image', assetId: 'detail' }, jpgPath: cropFile,
+}), { status: 400, message: '当前封面图片不可用' });
+
+const squareCover = { sourceWidth: 200, sourceHeight: 100, outputWidth: 100, outputHeight: 100,
+  framing: { scale: 1, offsetX: 0, offsetY: 0 } };
+const panned = panCoverFraming(squareCover, { x: 25, y: 80 });
+assert.deepEqual(panned, { scale: 1, offsetX: -0.5, offsetY: 0 });
+assert.equal(coverFramingGeometry({ ...squareCover, framing: panned }).left, 25);
+const edge = panCoverFraming(squareCover, { x: 800, y: 80 });
+assert.deepEqual(coverFramingGeometry({ ...squareCover, framing: edge }), { resizedWidth: 200, resizedHeight: 100, left: 0, top: 0 });
 
 // ── ZIP 清单只来自登记记录 ──
 const zipEntries = exportZipEntries(db, { run, ids: all.map((record) => record.id) });

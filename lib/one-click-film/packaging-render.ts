@@ -227,6 +227,9 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
   const saved = readFilmBody(db, run, record.entryCode);
   if (!saved || !packagingEligibility(db, run, record.entryCode).ready) throw new Error('请先通过当前成片的审片');
   const body = await playableFilmBody(saved);
+  const introFrames = record.options.cover ? FINAL_EDIT_INTRO_FRAMES : 0;
+  const cover = resolveFilmCoverMedia(record.options.coverMedia, body);
+  const imagePath = introFrames && 'assetId' in cover ? resolveFilmCoverImagePath(db, run, body, cover) : undefined;
   const useSubtitles = record.options.subtitles && body.snapshot.soundMode !== 'none';
   if (useSubtitles && record.subtitleCues.length && !refreshSubtitles && !record.subtitlesPrepared) {
     throw new Error('请先在字幕面板完成口播对时，或关闭口播字幕后再导出。');
@@ -240,7 +243,6 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
   try {
     const bodyFile = path.join(work, 'body.mp4');
     await renderFilmBody(body, bodyFile, body.draft ? readyHdPaths(db, run, body) : undefined);
-    const introFrames = record.options.cover ? FINAL_EDIT_INTRO_FRAMES : 0;
     const offset = introFrames / FINAL_EDIT_FPS;
     const totalFrames = body.frames + introFrames;
     const totalSec = totalFrames / FINAL_EDIT_FPS;
@@ -251,12 +253,8 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     const overlay = packagingOverlayConfig(record);
     const stickers = record.options.stickers?.length
       ? await writeStickerFile(work, record.options.stickers, offset, body.frames / FINAL_EDIT_FPS) : '';
-    const cover = resolveFilmCoverMedia(record.options.coverMedia, body);
     const coverPath = path.join(work, 'cover.jpg');
-    if (introFrames) {
-      const imagePath = 'assetId' in cover ? resolveFilmCoverImagePath(db, run, body, cover) : undefined;
-      await writeFilmCover({ bodyPath: bodyFile, cover, imagePath, jpgPath: coverPath });
-    }
+    if (introFrames) await writeFilmCover({ bodyPath: bodyFile, cover, imagePath, jpgPath: coverPath });
     const intro = introFrames
       ? `[1:v]trim=end_frame=${introFrames},format=yuv420p,setsar=1,setpts=PTS-STARTPTS[intro];[intro][0:v]concat=n=2:v=1:a=0[base];`
       : '';
@@ -324,7 +322,15 @@ export async function renderFilmPackaging(db: Database.Database, run: OneClickFi
   if (record.ready) {
     const renderer = db.prepare("SELECT json_extract(optionsJson,'$.captionRenderer') FROM one_click_film_packaging WHERE id=?")
       .pluck().get(record.id);
-    if (!record.options.subtitles || renderer === 'single-line') return;
+    if (!record.options.subtitles || renderer === 'single-line') {
+      const cover = record.options.coverMedia;
+      if (record.options.cover && cover && 'assetId' in cover) {
+        const body = readFilmBody(db, run, code);
+        if (!body) throw new OneClickFilmError('invalid_input', '还没有生成原片');
+        resolveFilmCoverImagePath(db, run, body, cover);
+      }
+      return;
+    }
   }
   const key = `${run.id}/${record.id}/${record.revision}`;
   let work = pending.get(key);
