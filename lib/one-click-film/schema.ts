@@ -462,6 +462,25 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
     `,
   },
   {
+    version: 14,
+    sql: `
+      CREATE TABLE one_click_film_auto_covers (
+        entryId TEXT NOT NULL REFERENCES one_click_film_entries(id) ON DELETE CASCADE,
+        sourceSignature TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        state TEXT NOT NULL CHECK (state IN ('queued','started','waiting','ready','fallback')),
+        principalModule TEXT NOT NULL DEFAULT 'video',
+        principalTaskId TEXT NOT NULL,
+        requestJson TEXT,
+        frame INTEGER,
+        shotId TEXT,
+        reason TEXT,
+        PRIMARY KEY (entryId, sourceSignature)
+      );
+      ALTER TABLE one_click_film_packaging ADD COLUMN coverClampSignature TEXT;
+    `,
+  },
+  {
     version: 15,
     sql: `
       CREATE TABLE one_click_film_cover_assets (
@@ -595,6 +614,7 @@ function assertTablesExist(db: Database.Database): void {
     'one_click_film_hd_sources',
     'one_click_film_packaging',
     'one_click_film_exports',
+    'one_click_film_auto_covers',
   ]) {
     if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)) {
       throw new Error(`一键成片 schema 缺少表 ${table}`);

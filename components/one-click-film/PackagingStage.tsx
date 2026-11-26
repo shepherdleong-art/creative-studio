@@ -65,6 +65,20 @@ function FilmCover({ url, coverUrl, startSec, label, disabled, onOpen }: {
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const draftValues = (record: PackagingRecord) => JSON.stringify([record.title, record.template, record.options, record.subtitleCues, record.pointCues]);
 
+function coverMatches(left: PackagingRecord, right: PackagingRecord) {
+  return JSON.stringify(left.options.coverMedia ?? null) === JSON.stringify(right.options.coverMedia ?? null);
+}
+
+function hasOnlyAutomaticCoverChange(previous: PackagingRecord, next: PackagingRecord) {
+  const oldCover = previous.options.coverMedia;
+  const newCover = next.options.coverMedia;
+  const automatic = (!oldCover || oldCover.kind === 'auto_frame') && (!newCover || newCover.kind === 'auto_frame');
+  const clamped = next.coverFrameClamped && oldCover?.kind === 'video_frame' && newCover?.kind === 'video_frame';
+  return (coverMatches(previous, next) || ((automatic || clamped)
+    && JSON.stringify(oldCover?.framing) === JSON.stringify(newCover?.framing)))
+    && draftValues(previous) === draftValues({ ...next, options: { ...next.options, coverMedia: oldCover } });
+}
+
 async function readResponse(response: Response): Promise<ResponseBody> {
   const body = await response.json() as ResponseBody;
   if (!response.ok) throw new Error(body.message || body.error || '操作失败');
@@ -193,6 +207,60 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
 
   const refreshSequence = useRef(0);
   const activeCode = draft?.entryCode;
+  const coverSignature = media?.signature;
+  const applyCoverRefresh = useCallback((updated: PackagingRecord) => {
+    if (!baseline || updated.entryCode !== baseline.entryCode || updated.revision < baseline.revision) return;
+    const mayRebase = hasOnlyAutomaticCoverChange(baseline, updated);
+    if (mayRebase) {
+      setBaseline(updated);
+      setSelected(current => current[updated.entryCode] === baseline.revision
+        ? { ...current, [updated.entryCode]: updated.revision } : current);
+    }
+    setDraft(current => {
+      if (!current || current.entryCode !== updated.entryCode || current.revision !== baseline.revision) return current;
+      const refreshed = { ...current, autoCover: updated.autoCover, autoCoverPublicationPending: updated.autoCoverPublicationPending };
+      if (!mayRebase) return refreshed;
+      refreshed.revision = updated.revision;
+      if (coverMatches(current, baseline)) {
+        refreshed.options = { ...current.options, coverMedia: updated.options.coverMedia };
+        refreshed.coverFrameClamped = updated.coverFrameClamped;
+      } else if (current.options.coverMedia?.kind === 'auto_frame' && updated.autoCover?.media) {
+        // The draft may have opted back into automatic selection or adjusted its framing.
+        refreshed.options = { ...current.options, coverMedia: { ...updated.autoCover.media, framing: current.options.coverMedia.framing } };
+      }
+      return refreshed;
+    });
+  }, [baseline]);
+  const waitingForCover = draft?.autoCover?.status === 'pending' || draft?.autoCoverPublicationPending;
+  const cardsHavePendingCover = records.some(record => record.autoCover?.status === 'pending' || record.autoCoverPublicationPending);
+  useEffect(() => {
+    if (working || (activeCode ? !waitingForCover : !cardsHavePendingCover)) return;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      try {
+        const query = activeCode ? `?autoCover=${encodeURIComponent(activeCode)}` : '';
+        const result = await fetch(`${base}/packaging${query}`, { cache: 'no-store', signal: abort.signal }).then(readResponse);
+        if (abort.signal.aborted) return;
+        if (result.record && result.record.autoCover?.sourceSignature === coverSignature) applyCoverRefresh(result.record);
+        if (result.packaging) {
+          setRecords(result.packaging);
+          setPreviews(result.previews ?? []);
+          const refreshed = result.packaging;
+          setSelected(current => Object.fromEntries(Object.entries(current).map(([entryCode, revision]) => {
+            const previous = records.find(record => record.entryCode === entryCode && record.revision === revision);
+            const next = refreshed.find(record => record.entryCode === entryCode);
+            return [entryCode, previous && next && hasOnlyAutomaticCoverChange(previous, next) ? next.revision : revision];
+          })));
+        }
+      } catch {
+        // Cover selection is optional while reviewing and editing.
+      }
+      if (!abort.signal.aborted) timer = setTimeout(() => void check(), 1500);
+    };
+    timer = setTimeout(() => void check(), 1000);
+    return () => { abort.abort(); clearTimeout(timer); };
+  }, [activeCode, applyCoverRefresh, base, cardsHavePendingCover, coverSignature, records, waitingForCover, working]);
   const refreshReview = useCallback(async () => {
     if (!activeCode) return;
     const sequence = ++refreshSequence.current;
@@ -202,9 +270,22 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     if (!result.media || !result.record) throw new Error('无法刷新审片预览');
     const refreshedMedia = result.media;
     setMedia(current => current?.review.entryCode === activeCode ? refreshedMedia : current);
+    applyCoverRefresh(result.record);
     const { canExport, reason, subtitlesPrepared } = result.record;
     setDraft(current => current?.entryCode === activeCode ? { ...current, canExport, reason, subtitlesPrepared } : current);
-  }, [activeCode, base]);
+  }, [activeCode, applyCoverRefresh, base]);
+
+  const retryAutoCover = async () => {
+    if (!draft?.autoCover || !media || draft.autoCover.sourceSignature !== media.signature || working) return;
+    setWorking('auto-cover');
+    setError('');
+    try {
+      const result = await post('packaging', { action: 'retry-auto-cover', entryCode: draft.entryCode,
+        sourceSignature: media.signature, attempt: draft.autoCover.attempt });
+      if (result.record) applyCoverRefresh(result.record);
+    } catch (cause) { setError(message(cause)); }
+    finally { setWorking(''); }
+  };
 
   const save = async (record: PackagingRecord) => {
     if (baseline && draftValues(baseline) === draftValues(record)) return record;
@@ -349,7 +430,8 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     <PackagingDraftEditor key={media.review.jobId} projectId={state.project.id} images={state.images}
       entry={state.entries.find(entry => entry.code === draft.entryCode)!} initialShot={initialShot}
       onRefresh={refreshReview} onAdjustSound={() => void finishEditing('sound')}
-      draft={draft} media={media} tracks={bgmTracks} busy={busy} onChange={setDraft} onRecognize={() => void recognize()} />
+      draft={draft} media={media} tracks={bgmTracks} busy={busy} onChange={setDraft} onRecognize={() => void recognize()}
+      onRetryAutoCover={() => void retryAutoCover()} />
   </div>;
 
   const exportCount = Object.keys(selected).length;

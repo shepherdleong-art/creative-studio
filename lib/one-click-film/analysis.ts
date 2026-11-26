@@ -71,7 +71,7 @@ function parseVisionResult(value: unknown): VisionResult {
   };
 }
 
-function pickVisionProvider(db: Database.Database, requestedProviderId?: string) {
+export function pickVisionProvider(requestedProviderId?: string) {
   const providers = getAvailableProviders();
   const usable = providers.filter((provider) => provider.configured && provider.supportsVision);
   if (requestedProviderId) {
@@ -96,7 +96,7 @@ export async function runOneClickFilmAnalysis(input: {
   if (!analysis) throw new Error('分析任务不存在');
 
   try {
-    const provider = pickVisionProvider(db, input.providerId);
+    const provider = pickVisionProvider(input.providerId);
     const tileSet = await tileSourceImages(db, analysis.projectId, analysis.sourceImageIds, {
       signal: input.signal,
       directVision: true,

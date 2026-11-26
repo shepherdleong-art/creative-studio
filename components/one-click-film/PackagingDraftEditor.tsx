@@ -7,6 +7,7 @@ import { applyPackagingStickerEdit, createManualPackagingSticker, MAX_STICKER_IN
 import type { PackagingOptions, PackagingRecord, TextCue } from '@/lib/one-click-film/packaging';
 import { resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film/cover-media';
 import type { CoverFraming } from '@/lib/media-core/cover-types';
+import { FilmCoverAutoControls } from './FilmCoverAutoControls';
 import { FilmCoverPanel } from './FilmCoverPanel';
 import { FilmCoverFramingPreview } from './FilmCoverFramingPreview';
 import { PackagingTimeline, type PackagingTrack, type TimelineClip } from './PackagingTimeline';
@@ -40,7 +41,7 @@ function activeAt<T extends Pick<TextCue, 'startSec' | 'endSec'>>(rows: T[], pos
   return rows.find((cue) => position >= cue.startSec && position < cue.endSec);
 }
 
-export function PackagingDraftEditor({ projectId, images, entry, initialShot, draft, media, tracks, busy, onChange, onRecognize, onRefresh, onAdjustSound }: {
+export function PackagingDraftEditor({ projectId, images, entry, initialShot, draft, media, tracks, busy, onChange, onRecognize, onRefresh, onAdjustSound, onRetryAutoCover }: {
   projectId: string;
   images: FilmImage[];
   entry: FilmEntry;
@@ -53,6 +54,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   busy: boolean;
   onChange: (next: PackagingRecord) => void;
   onRecognize: () => void;
+  onRetryAutoCover: () => void;
 }) {
   const offset = draft.options.cover ? FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS : 0;
   const duration = media.durationSec + offset;
@@ -214,7 +216,10 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
     options: { coverMedia: { ...coverMedia, framing: undefined } } });
   const updateFraming = (framing?: CoverFraming) => updateOptions({ coverMedia: { ...coverMedia, framing } });
   const selectCover = (coverMedia?: FilmCoverMedia) => {
-    updateOptions({ coverMedia });
+    const automatic = draft.autoCover?.sourceSignature === media.signature ? draft.autoCover.media : undefined;
+    const selected = coverMedia ?? automatic
+      ?? { kind: 'auto_frame', frame: 0, sourceSignature: media.signature, fallback: true };
+    onChange({ ...draft, coverFrameClamped: false, options: { ...draft.options, coverMedia: selected } });
     if (offset) seek(0);
   };
   const takeCurrentCover = () => {
@@ -544,6 +549,10 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
             image={coverImage} thumbnail={thumbnail} expanded={coverExpanded} busy={busy} canTakeCurrent={position >= offset}
             projectId={projectId} images={images} entryCode={draft.entryCode} template={draft.template}
             onSelect={selectCover} onTakeCurrent={takeCurrentCover} onToggle={() => setCoverExpanded(current => !current)} />
+          {draft.coverFrameClamped ? <p className={styles.hint} role="status">原选帧超出正文，已定位到最后一帧。</p> : null}
+          {coverExpanded ? <FilmCoverAutoControls state={draft.autoCover}
+            current={!draft.options.coverMedia || draft.options.coverMedia.kind === 'auto_frame'}
+            disabled={busy || draft.autoCover?.sourceSignature !== media.signature} onRetry={onRetryAutoCover} /> : null}
         </div>
         {selectedPoint ? <label className={styles.editRow}>当前花字<input ref={pointInput} className="input-field" maxLength={60}
           value={selectedPoint.text} onChange={(event) => onChange({ ...draft, options: { ...draft.options, pointCuesEdited: true }, pointCues: draft.pointCues.map((cue) =>
