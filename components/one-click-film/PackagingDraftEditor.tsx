@@ -5,9 +5,11 @@ import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render
 import { clamp, filmCaptionSvg, isUneditedFilmPointSticker, resolveFilmSubtitleStyle, splitFilmCoverTitle, syncFilmPointStickers, STICKERS, type Position } from '@/lib/one-click-film/packaging-edit';
 import { applyPackagingStickerEdit, createManualPackagingSticker, MAX_STICKER_INSTANCES, planStickerFramesAtPlayhead, STICKER_MIN_DURATION_FRAMES, type PackagingStickerEditPatch } from '@/lib/media-core/packaging-stickers';
 import type { PackagingOptions, PackagingRecord, TextCue } from '@/lib/one-click-film/packaging';
-import type { FilmCoverMedia } from '@/lib/one-click-film/cover-media';
+import { resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film/cover-media';
+import type { CoverFraming } from '@/lib/media-core/cover-types';
 import { FilmCoverAutoControls } from './FilmCoverAutoControls';
 import { FilmCoverPanel } from './FilmCoverPanel';
+import { FilmCoverFramingPreview } from './FilmCoverFramingPreview';
 import { PackagingTimeline, type PackagingTrack, type TimelineClip } from './PackagingTimeline';
 import { useShotThumbnails } from './useShotThumbnails';
 import { ensureServerFontLoaded } from '@/components/system-fonts';
@@ -15,7 +17,7 @@ import BatchTextStyleEditor from '@/components/batch-production/BatchTextStyleEd
 import { PackagingAppearanceControls } from '@/components/packaging/PackagingAppearanceControls';
 import PackagingOverlay from '@/components/packaging/PackagingOverlay';
 import { StickerPanel, type StickerAssetChoice } from '@/components/mixcut/StickerPanel';
-import { ToolbarButton } from '@/components/ui/Appearance';
+import { Segmented, ToolbarButton } from '@/components/ui/Appearance';
 import { ShotInspector, type FilmReview } from './ReviewStage';
 import type { FilmImage, FilmEntry } from './types';
 import styles from './one-click-film.module.css';
@@ -33,6 +35,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'sticker', label: '贴纸' }, { id: 'music', label: '配乐' },
 ];
 const frameSec = 1 / FINAL_EDIT_FPS;
+const CENTERED_COVER: CoverFraming = { scale: 1, offsetX: 0, offsetY: 0 };
 
 function activeAt<T extends Pick<TextCue, 'startSec' | 'endSec'>>(rows: T[], position: number) {
   return rows.find((cue) => position >= cue.startSec && position < cue.endSec);
@@ -70,6 +73,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const [overlay, setOverlay] = useState('');
   const [coverImage, setCoverImage] = useState('');
   const [coverExpanded, setCoverExpanded] = useState(false);
+  const [coverMode, setCoverMode] = useState<'overlay' | 'framing'>('overlay');
   const [previewError, setPreviewError] = useState('');
   const [coverField, setCoverField] = useState('title');
   const monitor = useRef<HTMLDivElement>(null);
@@ -204,6 +208,13 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
   const stickers = draft.options.stickers ?? [];
   const assetStickers = draft.options.assetStickers ?? [];
   const bodyFrames = Math.round(media.durationSec * FINAL_EDIT_FPS);
+  const editingCover = offset > 0 && position < offset && !playing;
+  const framingMode = editingCover && coverMode === 'framing' && !busy;
+  const coverMedia = resolveFilmCoverMedia(draft.options.coverMedia, { frames: bodyFrames, signature: media.signature });
+  const coverFraming = coverMedia.framing ?? CENTERED_COVER;
+  const coverFramingInput = JSON.stringify({ action: 'cover-framing-source', entryCode: draft.entryCode,
+    options: { coverMedia: { ...coverMedia, framing: undefined } } });
+  const updateFraming = (framing?: CoverFraming) => updateOptions({ coverMedia: { ...coverMedia, framing } });
   const selectCover = (coverMedia?: FilmCoverMedia) => {
     const automatic = draft.autoCover?.sourceSignature === media.signature ? draft.autoCover.media : undefined;
     const selected = coverMedia ?? automatic
@@ -239,7 +250,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
       y: clamp(origin.y + (event.clientY - gesture.y) / gesture.height * 100, 4, 96) });
   };
   const startCanvasDrag = (event: PointerEvent<HTMLButtonElement>, origin: Position, target: Tab, id: string) => {
-    if (event.button !== 0 || busy) return;
+    if (event.button !== 0 || busy || framingMode) return;
     const bounds = canvas.current?.getBoundingClientRect();
     if (!bounds?.width || !bounds.height) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -336,10 +347,10 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
     <div className={styles.draftCenter}>
       <div className={styles.draftMonitor} ref={monitor} data-expanded={expanded}>
         <div className={styles.draftCanvas} ref={canvas} style={{ aspectRatio: size.width / size.height }}
-          onDragOver={event => { if (dragSticker.current) event.preventDefault(); }}
+          onDragOver={event => { if (!framingMode && dragSticker.current) event.preventDefault(); }}
           onDrop={event => {
             const choice = dragSticker.current;
-            if (!choice) return;
+            if (!choice || framingMode) return;
             event.preventDefault();
             dragSticker.current = null;
             setDraggingSticker(false);
@@ -357,6 +368,9 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
             // eslint-disable-next-line @next/next/no-img-element -- 草稿封面与服务器取色使用同一图片
             <img className={styles.draftCoverImage} src={coverImage} alt="片头封面底图" />
           ) : null}
+          {framingMode ? <FilmCoverFramingPreview key={`${media.url}:${coverFramingInput}`}
+            url={`/api/one-click-film/${encodeURIComponent(projectId)}/packaging`} input={coverFramingInput}
+            size={size} framing={coverFraming} onChange={updateFraming} onError={setPreviewError} /> : null}
           {stickers.filter((cue) => bodyTime >= cue.startSec && bodyTime < cue.endSec).map((cue) =>
             <button key={cue.id} type="button" className={styles.previewSticker} data-active={selected === `sticker:${cue.id}`}
               style={{ left: `${cue.x}%`, top: `${cue.y}%` }} aria-label={`移动${STICKERS[cue.kind].label}贴纸`}
@@ -368,8 +382,8 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
             </button>)}
           {overlay ? <PackagingOverlay srcDoc={overlay} timeSec={position}
             onFrame={handleOverlayFrame}
-            editable={!playing && !busy && (tab === 'packaging' || tab === 'sticker') && !draggingSticker}
-            stickerEditId={!playing && !busy && !draggingSticker && tab === 'sticker' && selectedAssetSticker
+            editable={!framingMode && !playing && !busy && (editingCover || tab === 'packaging' || tab === 'sticker') && !draggingSticker}
+            stickerEditId={!framingMode && !playing && !busy && !draggingSticker && tab === 'sticker' && selectedAssetSticker
               && bodyTime >= (selectedAssetSticker.startFrame - FINAL_EDIT_INTRO_FRAMES) * frameSec
               && bodyTime < (selectedAssetSticker.endFrame - FINAL_EDIT_INTRO_FRAMES) * frameSec ? selectedAssetSticker.id : ''}
             onLayout={(key, layout) => {
@@ -423,6 +437,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
           </div> : null}
           {safeArea ? <div className={styles.draftSafeArea} aria-label="4% 预览安全区" /> : null}
         </div>
+        <div className={styles.previewFooter}>
         <div className={styles.previewControls} aria-label="预览控制">
           <ToolbarButton icon={playing ? 'pause' : 'play'} disabled={busy} onClick={() => playing ? seek(time.current) : startPlayback()}>
             {playing ? '暂停' : '播放'}
@@ -430,6 +445,22 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
           <button type="button" className="cap" aria-pressed={safeArea} onClick={() => setSafeArea(!safeArea)}>安全区</button>
           <ToolbarButton icon="maximize" onClick={() => void toggleFullscreen()}>{fullscreen || expanded ? '退出全屏' : '全屏'}</ToolbarButton>
           {previewError ? <span className={styles.hintFail} role="alert">{previewError}</span> : null}
+        </div>
+        {editingCover ? <div className={styles.previewControls}>
+          <Segmented value={coverMode} onChange={next => {
+            setCoverMode(next);
+            if (next === 'overlay' && tab !== 'packaging' && tab !== 'sticker') setTab('packaging');
+          }} label="封面编辑模式" size="small" semantics="toggle" options={[
+            { value: 'overlay', label: '编辑文字/贴纸' }, { value: 'framing', label: '调整封面底图' },
+          ]} />
+          {framingMode ? <>
+            <label className={styles.coverZoom}>缩放 <output className="tnum">{Math.round(coverFraming.scale * 100)}%</output>
+              <input type="range" min={1} max={3} step={0.05} aria-label="封面缩放" value={coverFraming.scale}
+                onChange={event => updateFraming({ ...coverFraming, scale: event.target.valueAsNumber })} />
+            </label>
+            <button type="button" className="cap" disabled={!coverMedia.framing} onClick={() => updateFraming()}>重置构图</button>
+          </> : null}
+        </div> : null}
         </div>
       </div>
       {musicId ? <audio ref={music} src={`/api/final-edit-bgm/${encodeURIComponent(musicId)}/file`} preload="auto" loop /> : null}
@@ -516,6 +547,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
         <div ref={coverPanel}>
           <FilmCoverPanel media={draft.options.coverMedia} frames={bodyFrames} signature={media.signature} shots={media.review.shots}
             image={coverImage} thumbnail={thumbnail} expanded={coverExpanded} busy={busy} canTakeCurrent={position >= offset}
+            projectId={projectId} images={images}
             onSelect={selectCover} onTakeCurrent={takeCurrentCover} onToggle={() => setCoverExpanded(current => !current)} />
           {draft.coverFrameClamped ? <p className={styles.hint} role="status">原选帧超出正文，已定位到最后一帧。</p> : null}
           {coverExpanded ? <FilmCoverAutoControls state={draft.autoCover}

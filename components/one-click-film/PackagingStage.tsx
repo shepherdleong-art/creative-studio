@@ -218,11 +218,17 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
     }
     setDraft(current => {
       if (!current || current.entryCode !== updated.entryCode || current.revision !== baseline.revision) return current;
-      const coverChangedLocally = !coverMatches(current, baseline);
-      const canAdopt = mayRebase && !coverChangedLocally;
-      return { ...current, autoCover: updated.autoCover, autoCoverPublicationPending: updated.autoCoverPublicationPending,
-        ...(mayRebase && { revision: updated.revision }),
-        ...(canAdopt && { options: { ...current.options, coverMedia: updated.options.coverMedia }, coverFrameClamped: updated.coverFrameClamped }) };
+      const refreshed = { ...current, autoCover: updated.autoCover, autoCoverPublicationPending: updated.autoCoverPublicationPending };
+      if (!mayRebase) return refreshed;
+      refreshed.revision = updated.revision;
+      if (coverMatches(current, baseline)) {
+        refreshed.options = { ...current.options, coverMedia: updated.options.coverMedia };
+        refreshed.coverFrameClamped = updated.coverFrameClamped;
+      } else if (current.options.coverMedia?.kind === 'auto_frame' && updated.autoCover?.media) {
+        // The draft may have opted back into automatic selection or adjusted its framing.
+        refreshed.options = { ...current.options, coverMedia: { ...updated.autoCover.media, framing: current.options.coverMedia.framing } };
+      }
+      return refreshed;
     });
   }, [baseline]);
   const waitingForCover = draft?.autoCover?.status === 'pending' || draft?.autoCoverPublicationPending;

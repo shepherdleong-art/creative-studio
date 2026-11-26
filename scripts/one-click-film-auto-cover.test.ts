@@ -16,6 +16,7 @@ const { tryFilmRequestLock } = await import('../lib/one-click-film/request-lock.
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
 const { closeDb, getDb } = await import('../lib/db.ts');
+const { seedScriptProviders } = await import('../lib/seed.ts');
 const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 const { getOrCreateRun, createAnalysisVersion, markAnalysisSucceeded } = await import('../lib/one-click-film/store.ts');
 const { upsertReviewFromDetection } = await import('../lib/one-click-film/review.ts');
@@ -66,6 +67,7 @@ try {
   const readiness = await ensureOneClickFilmSchemaReady({ db, backupRoot: path.join(dataRoot, 'data', 'backups') });
   assert.equal(readiness.state, 'ready', JSON.stringify(readiness));
   // Opt out of real configured providers. The only usable fixture provider is on loopback.
+  seedScriptProviders();
   db.prepare("UPDATE script_providers SET enabled=0").run();
   const run = getOrCreateRun(db, 'project');
   const analysis = createAnalysisVersion(db, { run, sourceImageIds: [], status: 'running' });
@@ -105,6 +107,11 @@ try {
   const initialAttempt = current().autoCover!.attempt;
   retry();
   retryFilmAutoCover(db, run, 'F01', body.signature, initialAttempt);
+  const framing = { scale: 1.5, offsetX: 0.2, offsetY: -0.15 };
+  const initialCover = { kind: 'auto_frame', frame: 0, sourceSignature: body.signature, fallback: true, framing };
+  const framed = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: current().revision,
+    options: { coverMedia: initialCover } })[0]!;
+  assert.deepEqual(framed.options.coverMedia, initialCover);
   const before = current().revision;
   await Promise.all([syncFilmAutoCover(db, run, body), syncFilmAutoCover(db, run, body)]);
   assert.equal(fixtureError, undefined);
@@ -112,7 +119,7 @@ try {
   assert.deepEqual(receivedFrames, [12, 36, 60], '每个候选位于镜头内部');
   assert.equal(current().autoCover?.attempt, initialAttempt + 1);
   const auto = current().options.coverMedia;
-  assert.deepEqual(auto, { kind: 'auto_frame', frame: 36, shotId: 's2', sourceSignature: body.signature });
+  assert.deepEqual(auto, { kind: 'auto_frame', frame: 36, shotId: 's2', sourceSignature: body.signature, framing });
   assert.equal(current().revision, before + 1, '可见封面变化更新包装修订');
 
   code = 451;
