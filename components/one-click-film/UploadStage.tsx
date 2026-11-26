@@ -4,14 +4,13 @@ import { useRef, useState, type DragEvent } from 'react';
 import { GroupList, GroupRow, Tag, ToolbarButton } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
 import { uploadImages } from '@/lib/image-upload-client';
-import { analysisSourceIds, DETAIL_USAGE, SCENE_USAGE, type FilmImage, type FilmState } from './types';
+import { analysisRejectionTitle, DETAIL_USAGE, SCENE_USAGE, type FilmImage, type FilmState } from './types';
 import styles from './one-click-film.module.css';
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 /**
- * 第二步 · 上传素材：场景图与详情页分区添加、预览、移除。
- * 至少一份素材就能发起分析；换图后需要重新分析。
+ * 第二步 · 上传素材：分区管理参与分析的场景图与详情页。
  */
 export function UploadStage({
   state,
@@ -28,7 +27,8 @@ export function UploadStage({
 }) {
   const scene = state.images.filter((image) => image.usage === SCENE_USAGE);
   const detail = state.images.filter((image) => image.usage === DETAIL_USAGE);
-  const total = analysisSourceIds(state).length;
+  const total = scene.length + detail.length;
+  const rejectionTitle = analysisRejectionTitle(state.analysis);
   const hasResult = state.analysis?.status === 'succeeded';
   const activeMutation = useRef(false);
   const [updating, setUpdating] = useState(false);
@@ -70,6 +70,9 @@ export function UploadStage({
         </button>
       </div>
     </div>
+    {rejectionTitle ? <p className={styles.hintWarn} role="status">
+      {rejectionTitle}。请核对素材后重试。
+    </p> : null}
     <div className={styles.materialCards}>
       <MaterialCard title="场景图" usage={SCENE_USAGE} projectId={state.project.id} images={scene}
         disabled={busy || updating} mutate={mutate} />

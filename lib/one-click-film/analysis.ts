@@ -15,8 +15,7 @@ import {
  * 素材分析：把本项目选中的场景图/详情页切成视觉模型可读的切片，
  * 解析成「带来源的卖点」并落库。
  *
- * 只有一张场景图也能分析：外观与可观察的使用动作可以入稿，
- * 具体功能主张仍需要对应证据——解析时按来源图片数量收紧要求。
+ * 只选场景图也能分析外观与可观察的使用动作。具体功能主张需要详情页证据。
  */
 
 interface VisionPoint {
@@ -108,7 +107,8 @@ export async function runOneClickFilmAnalysis(input: {
     })));
     if (tiles.length === 0) throw new Error('没有可读取的素材图片');
 
-    const singleSceneImage = tileSet.pages.length === 1;
+    const sourceUsage = db.prepare('SELECT usage FROM image_assets WHERE projectId = ? AND id = ?').pluck();
+    const hasDetailPage = tileSet.pages.some((page) => sourceUsage.get(analysis.projectId, page.imageAssetId) === 'detail_page');
     const raw = await completeJson<unknown>({
       providerId: provider.id,
       systemPrompt: '你是电商种草素材分析器。只返回一个 JSON 对象，不输出解释。只写图片中能直接看到或可合理观察到的内容，不得编造参数、材质、认证或功效。',
@@ -122,9 +122,9 @@ export async function runOneClickFilmAnalysis(input: {
           '每条卖点给出 text、kind、sourcePageIndex、tileRefs',
           'kind=appearance 表示外观特征；kind=usage 表示可从画面推断的使用动作或体验；kind=claim 表示具体功能主张',
           'kind=claim 必须能在图片中找到明确证据（文字或可辨认结构）；找不到证据时不要输出该条',
-          singleSceneImage
-            ? '本次只有一张场景图：只输出外观与可观察的使用动作，不要输出具体功能主张'
-            : '详情页可用于支撑具体功能主张；tileRefs 使用 1 起的整页切片编号',
+          hasDetailPage
+            ? '详情页可用于支撑具体功能主张；tileRefs 使用 1 起的整页切片编号'
+            : '本次没有详情页：只输出外观与可观察的使用动作，不要输出具体功能主张',
           '不要输出价格、促销、限时活动、赠品、销量排名等时效信息',
           'sourcePageIndex 是图片在本次素材列表中的 0 起序号',
         ],
@@ -158,7 +158,7 @@ export async function runOneClickFilmAnalysis(input: {
       const page = point.sourcePageIndex === null ? tileSet.pages[0] : pageByIndex.get(point.sourcePageIndex);
       const draft = normalizeSellingPointDraft({
         text: point.text,
-        kind: singleSceneImage && point.kind === 'claim' ? 'usage' : point.kind,
+        kind: !hasDetailPage && point.kind === 'claim' ? 'usage' : point.kind,
         sourceImageId: page?.imageAssetId ?? analysis.sourceImageIds[0] ?? null,
         sourceLabel: page ? `${page.filename}${point.tileRefs.length ? ` · 切片 ${point.tileRefs.join('、')}` : ''}` : '',
         evidenceRefs: page ? [{

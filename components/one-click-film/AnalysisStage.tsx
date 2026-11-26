@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { EmptyState, GroupHeading, Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
-import { analysisSourceIds, type FilmPoint, type FilmState } from './types';
+import { analysisRejectionTitle, analysisSourceIds, type FilmPoint, type FilmState } from './types';
 import { SourceSummary } from './UploadStage';
 import styles from './one-click-film.module.css';
 
@@ -63,20 +63,28 @@ export function AnalysisStage({
     </div>;
   }
 
+  const sourceImages = state.images.filter((image) => analysis.sourceImageIds.includes(image.id));
   if (analysis.status === 'failed') {
+    const rejectionTitle = analysisRejectionTitle(analysis);
     return <div className={styles.stage}>
       <div className={styles.stageBody}>
         <EmptyState
           icon="alert"
-          title="分析没有完成"
-          description={analysis.errorMessage || '识别失败，可以换一张更清晰的图片后重试。'}
+          title={rejectionTitle || '分析没有完成'}
+          description={rejectionTitle
+            ? '请核对本次提交的素材，可以返回上传页更换素材后重试。'
+            : analysis.errorMessage || '识别失败，可以换一张更清晰的图片后重试。'}
         />
+        {rejectionTitle && sourceImages.length > 0 ? <>
+          <GroupHeading>本次提交的素材</GroupHeading>
+          <SourceSummary images={sourceImages} />
+        </> : null}
       </div>
       <div className={styles.stageFoot}>
-        <p className={styles.hintFail}>{analysis.errorMessage || '识别失败'}</p>
         <div className={styles.footActions}>
-          <button type="button" className="cap" onClick={onBack}>回到上传素材</button>
-          <button type="button" className="cap cap-primary" disabled={busy} onClick={onReanalyze}>重新分析</button>
+          <button type="button" className={rejectionTitle ? 'cap cap-primary' : 'cap'} onClick={onBack}>回到上传素材</button>
+          {rejectionTitle ? null
+            : <button type="button" className="cap cap-primary" disabled={busy} onClick={onReanalyze}>重新分析</button>}
         </div>
       </div>
     </div>;
@@ -183,7 +191,7 @@ export function AnalysisStage({
       </div>
 
       <GroupHeading>本次来源</GroupHeading>
-      <SourceSummary images={state.images.filter((image) => analysisSourceIds(state).includes(image.id))} />
+      <SourceSummary images={sourceImages} />
     </div>
 
     <div className={styles.stageFoot}>

@@ -122,10 +122,20 @@ function mockProvider(media) {
         const user = body.messages.find((message) => message.role === 'user')?.content;
         const text = typeof user === 'string' ? user : user.find((item) => item.type === 'text')?.text;
         if (text.includes('analyze_product_material_for_short_video')) {
+          const analysis = JSON.parse(text);
+          assert.equal(user.filter((item) => item.type === 'image_url').length, analysis.tileCount);
+          if (analysis.imageCount === 3) {
+            res.writeHead(451, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { code: '451', message: "litellm.APIError: The response was filtered due to the prompt triggering Azure OpenAI's content management policy." } }));
+            return;
+          }
+          if (analysis.imageCount === 1) {
+            assert.ok(analysis.requirements.some((rule) => rule.startsWith('详情页可用于支撑具体功能主张')));
+          }
           fixtureJson(req, res, { choices: [{ message: { content: JSON.stringify({
             productName: '云朵床', appearance: '米白布艺靠背和卧室', sceneClues: '窗边卧室',
             points: [{ text: '坐到床边放松', kind: 'usage', sourcePageIndex: 0, tileRefs: ['tile_1'] },
-              { text: '软包靠背可倚靠', kind: 'claim', sourcePageIndex: 1, tileRefs: ['tile_1'] }],
+              { text: '软包靠背可倚靠', kind: 'claim', sourcePageIndex: analysis.imageCount - 1, tileRefs: ['tile_1'] }],
           }) } }] });
         } else {
           const script = JSON.parse(text);
@@ -412,10 +422,16 @@ try {
   }));
   page = await context.newPage();
   page.setDefaultTimeout(45_000);
+  let expectedAnalysisFailure = '';
   page.on('pageerror', error => localErrors.push(error.message));
   page.on('response', (response) => {
-    if (response.status() >= 400 && response.url().includes('/api/one-click-film/')) {
-      void response.text().then((body) => { localErrors.push(`HTTP ${response.status()} ${new URL(response.url()).pathname} ${body.slice(0, 300)}`); }).catch(() => {});
+    const pathname = new URL(response.url()).pathname;
+    if (response.status() === 502 && pathname === expectedAnalysisFailure && response.request().method() === 'POST') {
+      expectedAnalysisFailure = '';
+      return;
+    }
+    if (response.status() >= 400 && pathname.startsWith('/api/one-click-film/')) {
+      void response.text().then((body) => { localErrors.push(`HTTP ${response.status()} ${pathname} ${body.slice(0, 300)}`); }).catch(() => {});
     }
   });
 
@@ -456,13 +472,50 @@ try {
   if (output) await page.screenshot({ path: path.join(output, 'ui-upload.png') });
   const imagePath = await page.getByRole('img', { name: '场景样图.png' }).getAttribute('src');
   assert.ok([403, 404].includes((await api.raw(stranger, imagePath)).status), '素材读取必须拒绝无权限员工');
-  const analyzed = page.waitForResponse((response) => response.url().endsWith('/analysis') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: '分析 2 份素材' }).click();
+  const analysisPost = (response) => response.url().endsWith('/analysis') && response.request().method() === 'POST';
+  await dropImage(page.getByRole('region', { name: '详情页', exact: true }), '审核样图.png', await image('#aa9999'));
+  await expect(page.getByRole('region', { name: '场景图', exact: true }).getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '详情页', exact: true }).getByRole('checkbox')).toHaveCount(0);
+  expectedAnalysisFailure = `/api/one-click-film/${projectId}/analysis`;
+  const refused = page.waitForResponse(analysisPost);
+  await page.getByRole('button', { name: '分析 3 份素材' }).click();
+  const rejection = await refused;
+  assert.equal(rejection.status(), 502);
+  const refusedAnalysis = (await rejection.json()).analysis;
+  assert.match(refusedAnalysis.errorMessage, /上游内容审核拒绝/);
+  assert.equal(refusedAnalysis.sourceImageIds.length, 3);
+  await expect(page.getByText('上游内容审核拒绝了本次分析', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '回到上传素材', exact: true }).click();
+  await expect(page.getByRole('button', { name: '分析 3 份素材' })).toBeEnabled();
+  await expect(page.getByRole('img', { name: '审核样图.png' })).toBeVisible();
+  await page.getByRole('button', { name: '移除 审核样图.png', exact: true }).click();
+  await expect(page.getByRole('img', { name: '审核样图.png' })).toHaveCount(0);
+  await page.getByRole('button', { name: '移除 场景样图.png', exact: true }).click();
+  await expect(page.getByRole('img', { name: '场景样图.png' })).toHaveCount(0);
+  const detailOnly = page.waitForResponse(analysisPost);
+  await page.getByRole('button', { name: '分析 1 份素材' }).click();
+  const detailOnlyResponse = await detailOnly;
+  assert.equal(detailOnlyResponse.ok(), true);
+  const singlePage = (await detailOnlyResponse.json()).analysis;
+  assert.equal(singlePage.sourceImageIds.length, 1);
+  assert.equal(singlePage.points.find((point) => point.text === '软包靠背可倚靠').kind, 'claim');
+  await expect(page.getByText('本次来源', { exact: true })).toBeVisible();
+  await expect(page.getByText('详情样图.png', { exact: true })).toBeVisible();
+  await expect(page.getByText('场景样图.png', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('审核样图.png', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '回到上传素材', exact: true }).click();
+  await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', await image('#667788'));
+  await expect(page.getByRole('button', { name: '分析 2 份素材' })).toBeEnabled();
+  await page.getByRole('button', { name: '查看已有结果' }).click();
+  const analyzed = page.waitForResponse(analysisPost);
+  await page.getByRole('button', { name: '重新分析', exact: true }).click();
   const analysisResponse = await analyzed;
-  assert.equal(analysisResponse.ok(), true, (await analysisResponse.json()).message);
+  const analysisResult = await analysisResponse.json();
+  assert.equal(analysisResponse.ok(), true, analysisResult.message);
+  assert.equal(analysisResult.analysis.sourceImageIds.length, 2, '重新分析必须使用当前全部素材');
   await expect(page.getByText('坐到床边放松', { exact: true }).or(page.locator('input[value="坐到床边放松"]')).first()).toBeVisible();
   await page.getByTestId('one-click-film-confirm').click();
-  console.log('通过：普通员工建项目、上传两类素材、核对卖点；无权限员工读不到项目和素材。');
+  console.log('通过：上传页无需勾选；451 显示审核原因并保留原图；分析和重新分析使用当前全部素材，单张详情页支持功能卖点。');
 
   stage = '脚本手改与单条重做';
   await expect(page.getByRole('heading', { name: '生成脚本', exact: true })).toBeVisible();

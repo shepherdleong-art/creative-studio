@@ -1,4 +1,5 @@
 import type { ModelPreset, ModelSource, SoundMode, StoryStructure } from '@/lib/one-click-film/contract';
+import { PROVIDER_CONTENT_FILTER_HINT } from '@/lib/script-providers/error-diagnostics';
 
 /** 一键成片工作台的客户端数据形状：只描述界面真正读到的字段。 */
 
@@ -24,6 +25,7 @@ export interface FilmAnalysis {
   id: string;
   versionNumber: number;
   status: 'queued' | 'running' | 'succeeded' | 'failed';
+  sourceImageIds: string[];
   productName: string;
   appearance: string;
   sceneClues: string;
@@ -113,7 +115,14 @@ export function imagesOf(state: Pick<FilmState, 'images'>, usage: string): FilmI
   return state.images.filter((image) => image.usage === usage);
 }
 
-/** 分析入口可用的图片：场景图与详情页都属于本次分析的来源。 */
+/** 场景图与详情页都可以被选为分析来源。 */
 export function analysisSourceIds(state: Pick<FilmState, 'images'>): string[] {
   return state.images.filter((image) => image.usage === SCENE_USAGE || image.usage === DETAIL_USAGE).map((image) => image.id);
+}
+
+export function analysisRejectionTitle(analysis: FilmAnalysis | null): string | null {
+  if (analysis?.status !== 'failed' || !analysis.errorMessage) return null;
+  if (analysis.errorMessage.endsWith(PROVIDER_CONTENT_FILTER_HINT)) return '上游内容审核拒绝了本次分析';
+  if (analysis.errorMessage.includes('（HTTP 451）')) return '模型服务拒绝了本次分析（HTTP 451）';
+  return null;
 }

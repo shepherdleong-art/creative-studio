@@ -1,3 +1,5 @@
+export const PROVIDER_CONTENT_FILTER_HINT = '上游内容审核拒绝';
+
 /**
  * Provider errors are persisted by callers. Only return locally defined labels;
  * upstream messages, arbitrary codes, URLs and echoed prompts must never escape.
@@ -38,8 +40,9 @@ export function safeProviderErrorHint(body: string): string {
     return '上游限流或并发超限';
   }
   if (['content_policy_violation', 'content_filter', 'content_filter_error'].includes(code)
-    || /content[_ ]policy[_ ]violation|content.{0,30}(?:blocked|rejected).{0,30}(?:safety|policy)|safety system/i.test(message)) {
-    return '上游内容审核拒绝';
+    || /content[_ ]policy[_ ]violation|content.{0,30}(?:blocked|rejected).{0,30}(?:safety|policy)|safety system/i.test(message)
+    || /\b(?:response|prompt) was filtered due to [^\r\n]{1,120}\bcontent management policy\b/i.test(message)) {
+    return PROVIDER_CONTENT_FILTER_HINT;
   }
   if (code === 'model_not_found' || /model.{0,60}(?:does not exist|not found)|no available (?:channel|deployment)/i.test(message)) {
     return '模型不存在或上游没有可用通道';

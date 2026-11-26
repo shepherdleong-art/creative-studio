@@ -53,19 +53,21 @@ export function OneClickFilmWorkspace({ projectId }: { projectId: string }) {
   }, [reload]);
 
   const analyze = async () => {
-    if (!state) return;
+    if (!state || analyzing) return;
+    const imageIds = analysisSourceIds(state);
+    if (imageIds.length === 0) return;
     setAnalyzing(true);
     setError('');
     try {
       const response = await fetch(`/api/one-click-film/${projectId}/analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'analyze', imageIds: analysisSourceIds(state) }),
+        body: JSON.stringify({ action: 'analyze', imageIds }),
       });
-      const body = await response.json() as { message?: string; error?: string };
+      const body = await response.json() as { analysis?: FilmState['analysis']; message?: string; error?: string };
       await reload();
       setStage('analysis');
-      if (!response.ok) setError(body.message || body.error || '分析失败');
+      if (!response.ok && body.analysis?.status !== 'failed') setError(body.message || body.error || '分析失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

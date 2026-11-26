@@ -133,6 +133,16 @@ try {
     { body: JSON.stringify({ error: { code: 'rate_limit_exceeded', message: sensitiveEcho } }), hint: '上游限流', images: undefined },
     { body: JSON.stringify({ error: { code: 'insufficient_quota', message: sensitiveEcho } }), hint: '上游额度不足', images: undefined },
     { body: JSON.stringify({ error: { code: 'content_policy_violation', message: sensitiveEcho } }), hint: '上游内容审核拒绝', images: undefined },
+    {
+      status: 451,
+      body: JSON.stringify({ error: {
+        code: '451',
+        message: `litellm.APIError: The response was filtered due to the prompt triggering Azure OpenAI's content management policy. ${sensitiveEcho}`,
+      } }),
+      hint: '上游内容审核拒绝',
+      images: [{ mimeType: 'image/jpeg', imageUrl: 'https://example.test/image' }],
+    },
+    { status: 451, body: `<html>Unavailable For Legal Reasons. ${sensitiveEcho}</html>`, hint: '上游未提供可安全识别的原因', images: undefined },
     { body: JSON.stringify({ error: { code: 'model_not_found', message: sensitiveEcho } }), hint: '模型不存在', images: undefined },
     { body: JSON.stringify({ error: { code: 'invalid_api_key', message: sensitiveEcho } }), hint: '上游鉴权失败', images: undefined },
     { body: JSON.stringify({ error: { message: `Request timed out. ${sensitiveEcho}` } }), hint: '上游请求超时', images: undefined },
@@ -142,17 +152,18 @@ try {
     { body: `<html>${sensitiveEcho}</html>`, hint: '上游未提供可安全识别的原因', images: undefined },
   ]) {
     let calls = 0;
-    globalThis.fetch = async () => { calls += 1; return new Response(sample.body, { status: 400 }); };
+    const status = sample.status ?? 400;
+    globalThis.fetch = async () => { calls += 1; return new Response(sample.body, { status }); };
     await assert.rejects(chatCompletion(config, {
       systemPrompt: 'private-prompt', userPrompt: 'user', images: sample.images,
     }, lunaRuntime), (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.ok(error.message.includes(sample.hint), `缺少错误诊断：${sample.hint}`);
-      assert.match(error.message, /HTTP 400/);
+      assert.ok(error.message.includes(`HTTP ${status}`));
       assert.doesNotMatch(error.message, /private-|Bearer|https:\/\//, '错误会落库，不得包含上游原文');
       return true;
     });
-    assert.equal(calls, 1, '诊断不能为任意 400 增加重试');
+    assert.equal(calls, 1, '诊断不能为上游拒绝增加重试');
   }
 
   let fallbackCalls = 0;
