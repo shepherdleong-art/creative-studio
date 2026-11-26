@@ -10,8 +10,9 @@ import { resolveFilmCoverImagePath } from './cover-source.ts';
 import type { OneClickFilmRun } from './store.ts';
 
 /** Extract by picture number on the same 24 fps clock used by the composition. */
-export async function extractFilmCoverFrame(videoPath: string, frame: number, output: string) {
-  await runFfmpeg(['-y', '-i', videoPath, '-vf', `fps=${FINAL_EDIT_FPS},select=eq(n\\,${frame})`,
+export async function extractFilmCoverFrame(videoPath: string, frame: number, output: string, preview = false) {
+  const scale = preview ? ",scale='min(480,iw)':'min(480,ih)':force_original_aspect_ratio=decrease" : '';
+  await runFfmpeg(['-y', '-i', videoPath, '-vf', `fps=${FINAL_EDIT_FPS},select=eq(n\\,${frame})${scale}`,
     '-frames:v', '1', '-threads', '1', '-update', '1', output], { timeoutMs: 30_000 });
 }
 

@@ -168,12 +168,15 @@ export class LlmExecutionUnknownError extends Error {
   }
 }
 
-function unknownLlmOperation(operation: OperationRecord): LlmExecutionUnknownError {
-  const failureCode = operation.currentAttemptId
+function llmOperationFailureCode(operation: OperationRecord): string | null {
+  return operation.currentAttemptId
     ? getDb().prepare('SELECT errorCode FROM execution_attempts WHERE id = ?')
       .pluck().get(operation.currentAttemptId) as string | null
     : null;
-  return new LlmExecutionUnknownError(failureCode);
+}
+
+function unknownLlmOperation(operation: OperationRecord): LlmExecutionUnknownError {
+  return new LlmExecutionUnknownError(llmOperationFailureCode(operation));
 }
 
 export class LlmExecutionDeferredError extends Error {
@@ -398,7 +401,9 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
       if (rawText === null) throw new Error('LLM 执行检查点缺少原始正文');
       return parseJsonResponse<T>(rawText, runtime.name);
     }
-    if (operation.status === 'failed') throw new Error('LLM 调用失败，请查看执行台账');
+    if (operation.status === 'failed') {
+      throw new Error('LLM 调用失败，请查看执行台账', { cause: llmOperationFailureCode(operation) });
+    }
     if (operation.status === 'unknown' || operation.status === 'reconciling') {
       throw unknownLlmOperation(operation);
     }

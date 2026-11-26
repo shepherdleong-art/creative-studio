@@ -7,6 +7,8 @@ import { exportEligibility, exportEntries, listExports } from '@/lib/one-click-f
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 import { listPackaging } from '@/lib/one-click-film/packaging';
+import { tryFilmRequestLock } from '@/lib/one-click-film/request-lock';
+import { readFilmBody } from '@/lib/one-click-film/composition';
 import { renderFilmPackaging } from '@/lib/one-click-film/packaging-render';
 
 /** 已导出成片总览与导出提交。 */
@@ -50,26 +52,45 @@ async function __teamRoutePOST(
     if (revisions && records.some((record) => revisions[record.entryCode] !== record.revision)) {
       throw new OneClickFilmError('conflict', '选中的包装草稿已更新，请确认后再导出', 409);
     }
-    const rendered: string[] = [];
-    const failed: Array<{ entryCode: string; reason: string }> = [];
-    for (const record of records) {
-      try {
-        if (!record.canExport) throw new Error(record.reason || '成片待复核');
-        await renderFilmPackaging(db, run, record.entryCode, false, record.revision);
-        rendered.push(record.entryCode);
-      } catch (cause) {
-        failed.push({ entryCode: record.entryCode, reason: cause instanceof Error ? cause.message : String(cause) });
+    const leases: NonNullable<Awaited<ReturnType<typeof tryFilmRequestLock>>>[] = [];
+    try {
+      const rendered: string[] = [];
+      const pinned: typeof records = [];
+      const failed: Array<{ entryCode: string; reason: string }> = [];
+      for (const record of records) {
+        try {
+          if (!record.canExport) throw new Error(record.reason || '成片待复核');
+          const film = readFilmBody(db, run, record.entryCode);
+          if (!film) throw new Error('还没有生成原片');
+          // The chosen automatic frame stays pinned through media rendering and delivery copy.
+          const lease = await tryFilmRequestLock('cover-draft', [film.entryId]);
+          if (!lease) throw new Error('这条成片正在更新封面或导出，请稍后重试');
+          leases.push(lease);
+          pinned.push(record);
+        } catch (cause) {
+          failed.push({ entryCode: record.entryCode, reason: cause instanceof Error ? cause.message : String(cause) });
+        }
       }
+      for (const record of pinned) {
+        try {
+          await renderFilmPackaging(db, run, record.entryCode, false, record.revision);
+          rendered.push(record.entryCode);
+        } catch (cause) {
+          failed.push({ entryCode: record.entryCode, reason: cause instanceof Error ? cause.message : String(cause) });
+        }
+      }
+      const current = new Map(listPackaging(db, run).map((record) => [record.entryCode, record]));
+      const unchanged = rendered.filter((code) => {
+        if (current.get(code)?.revision === records.find((record) => record.entryCode === code)?.revision) return true;
+        failed.push({ entryCode: code, reason: '包装草稿已更新，请确认后再导出' });
+        return false;
+      });
+      const result = unchanged.length ? exportEntries(db, { run, codes: unchanged, all: false }) : { exported: [], failed: [], reused: [] };
+      result.failed.push(...failed);
+      return NextResponse.json({ ...result, exports: listExports(db, run) });
+    } finally {
+      for (const lease of leases) lease.release();
     }
-    const current = new Map(listPackaging(db, run).map((record) => [record.entryCode, record]));
-    const unchanged = rendered.filter((code) => {
-      if (current.get(code)?.revision === records.find((record) => record.entryCode === code)?.revision) return true;
-      failed.push({ entryCode: code, reason: '包装草稿已更新，请确认后再导出' });
-      return false;
-    });
-    const result = unchanged.length ? exportEntries(db, { run, codes: unchanged, all: false }) : { exported: [], failed: [], reused: [] };
-    result.failed.push(...failed);
-    return NextResponse.json({ ...result, exports: listExports(db, run) });
   } catch (error) {
     return jsonError(error);
   }

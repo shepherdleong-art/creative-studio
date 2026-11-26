@@ -16,6 +16,7 @@ import { validatePackagingStickers } from '@/lib/media-core/packaging-stickers';
 import { isExecutionDeferredError, isExecutionUnknownError } from '@/lib/media-core/execution/waiting';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
+import { retryFilmAutoCover, scheduleFilmAutoCover } from '@/lib/one-click-film/cover-auto';
 import { previewFilmCover } from '@/lib/one-click-film/cover-render';
 import { validateFilmCoverSelection } from '@/lib/one-click-film/cover-source';
 import { extractPackagingPalette, resolveTemplateHueMode } from '@/lib/media-core/packaging-palette';
@@ -40,6 +41,13 @@ async function __teamRouteGET(
       const record = listPackaging(db, run).find(item => item.entryCode === coverCode);
       const cover = await previewFilmCover(db, run, await playableFilmBody(saved), record?.options.coverMedia);
       return new NextResponse(new Uint8Array(cover), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' } });
+    }
+    const autoCode = request.nextUrl.searchParams.get('autoCover');
+    if (autoCode !== null) {
+      const body = run && readFilmBody(db, run, autoCode);
+      if (!run || !body) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      scheduleFilmAutoCover(db, run, body);
+      return NextResponse.json({ record: listPackaging(db, run).find(item => item.entryCode === autoCode) });
     }
     if (run) await syncGenerationStatus(db, run);
     return NextResponse.json({
@@ -68,6 +76,11 @@ async function __teamRoutePOST(
     const action = String(body.action ?? 'prepare');
     const entryCode = String(body.entryCode ?? '');
 
+    if (action === 'retry-auto-cover') {
+      const saved = retryFilmAutoCover(db, run, entryCode, body.sourceSignature, body.attempt);
+      scheduleFilmAutoCover(db, run, saved);
+      return NextResponse.json({ record: listPackaging(db, run).find(item => item.entryCode === entryCode) });
+    }
     if (action === 'edit') {
       if (typeof body.revision !== 'number' || !Number.isSafeInteger(body.revision) || body.revision < 1) {
         throw new OneClickFilmError('invalid_input', '缺少有效的包装草稿修订号');
@@ -134,6 +147,7 @@ async function __teamRoutePOST(
         preparePackaging(db, { run, options: body.options, codes: [entryCode], allowPreview: true });
         record = listPackaging(db, run).find((item) => item.entryCode === entryCode);
       }
+      scheduleFilmAutoCover(db, run, film);
       let subtitleWarning: string | undefined;
       let subtitleWaiting = false;
       if (body.prepareSubtitles === true && record?.options.subtitles && !record.subtitlesPrepared && film.snapshot.soundMode !== 'none') {

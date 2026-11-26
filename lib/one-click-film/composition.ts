@@ -33,7 +33,7 @@ export interface FilmBody {
   frames: number;
   reviewDurationUs?: number;
   draft: boolean;
-  snapshot: { soundMode?: 'native' | 'tts' | 'none'; narration?: string; narrationPath?: string; scriptRevision?: number; promptText?: string };
+  snapshot: { analysisId?: string; productName?: string; soundMode?: 'native' | 'tts' | 'none'; narration?: string; narrationPath?: string; scriptRevision?: number; promptText?: string };
   edits: Array<{ id: string; videoJobId: string; file: string; start: number; end: number; trim: number; whole: boolean }>;
   signature: string;
   approved: boolean;
@@ -164,9 +164,7 @@ export function readyHdPaths(db: Database.Database, run: OneClickFilmRun, body: 
   return result;
 }
 
-/** Use 24 fps source frames for every cut. Audio comes from one continuous input. */
-export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<string, string>): Promise<void> {
-  body = await playableFilmBody(body);
+export function filmBodyPictureSegments(body: FilmBody, hd?: Map<string, string>) {
   const availablePath = (id: string, draftPath: string) => {
     if (!hd) return draftPath;
     const source = hd.get(id);
@@ -192,7 +190,13 @@ export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<st
   if (position < body.frames) segments.push({
     file: availablePath(baseId, basePath), start: position + baseTrim, count: body.frames - position,
   });
-  const continuousSound = basePath;
+  return { segments, continuousSound: basePath, baseTrim };
+}
+
+/** Use 24 fps source frames for every cut. Audio comes from one continuous input. */
+export async function renderFilmBody(body: FilmBody, output: string, hd?: Map<string, string>): Promise<void> {
+  body = await playableFilmBody(body);
+  const { segments, continuousSound, baseTrim } = filmBodyPictureSegments(body, hd);
   const soundProbe = await probeVideoMedia(continuousSound);
   const first = await probeVideoMedia(segments[0]!.file);
   if (first.width < 2 || first.height < 2) throw new Error('无法读取成片画面');

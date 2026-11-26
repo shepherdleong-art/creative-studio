@@ -7,6 +7,7 @@ import { listEntries, type OneClickFilmRun } from './store.ts';
 import { FINAL_EDIT_FPS } from '../media-core/render-contract.ts';
 import { filmAudioSignature, readFilmBody } from './composition.ts';
 import { parseFilmCoverMedia, resolveFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
+import { automaticFilmCoverForDraft, filmCoverChoiceToReconcile, readFilmAutoCover, type FilmAutoCoverState } from './cover-auto-state.ts';
 import { validateFilmCoverSelection } from './cover-source.ts';
 import { videoJobFileUrl } from './generation.ts';
 import { cleanSellingPoint, parsePackagingConfig, sanitizePackagingLayouts, type FinalEditPackagingConfig, type PackagingLayouts, type PackagingVars } from '../media-core/packaging-vars.ts';
@@ -73,6 +74,9 @@ export interface PackagingRecord {
   errorMessage: string | null;
   videoUrl: string | null;
   canExport: boolean;
+  autoCover?: FilmAutoCoverState;
+  autoCoverPublicationPending?: boolean;
+  coverFrameClamped?: boolean;
   subtitlesPrepared: boolean;
 }
 
@@ -217,7 +221,7 @@ export function listPackaging(db: Database.Database, run: OneClickFilmRun): Pack
     .all(run.id) as Array<{
       id: string; entryCode: string; status: PackagingRecord['status']; template: PackagingTemplateId;
       optionsJson: string; title: string; subtitleCuesJson: string; pointCuesJson: string;
-      revision: number; errorMessage: string | null; sourceSignature: string; relativePath: string; audioSignature: string | null;
+      revision: number; errorMessage: string | null; sourceSignature: string; relativePath: string; audioSignature: string | null; coverClampSignature: string | null;
     }>;
   return rows.map((row) => {
     const eligibility = packagingEligibility(db, run, row.entryCode);
@@ -243,6 +247,7 @@ export function listPackaging(db: Database.Database, run: OneClickFilmRun): Pack
     if (row.status !== 'ready' && current && options.decoration && options.assetStickers === undefined && !options.stickers?.length) {
       options.assetStickers = stickersForFilmPoints(pointCues, current.frames);
     }
+    const autoCover = current ? readFilmAutoCover(db, current) : undefined;
     return {
       id: row.id,
       entryCode: row.entryCode,
@@ -255,6 +260,9 @@ export function listPackaging(db: Database.Database, run: OneClickFilmRun): Pack
       revision: row.revision,
       ready,
       canExport: eligibility.ready,
+      autoCover,
+      autoCoverPublicationPending: Boolean(current && autoCover && filmCoverChoiceToReconcile(options.coverMedia, current, autoCover)),
+      coverFrameClamped: options.coverMedia?.kind === 'video_frame' && current?.signature === row.coverClampSignature,
       subtitlesPrepared,
       reason: eligibility.ready ? (ready ? null : row.errorMessage || '待包装') : eligibility.reason,
       errorMessage: row.errorMessage,
@@ -386,11 +394,25 @@ export function updatePackagingDraft(db: Database.Database, input: {
   }
   if (typeof input.bgmId === 'string') options.bgmId = input.bgmId || undefined;
   const body = readFilmBody(db, input.run, input.entryCode);
-  if ('coverMedia' in changes && changes.coverMedia != null) {
-    if (!body) throw new OneClickFilmError('invalid_input', '还没有生成原片');
-    options.coverMedia = validateFilmCoverSelection(db, input.run, body, changes.coverMedia);
-    if (options.coverMedia?.kind === 'video_frame') options.coverMedia = resolveFilmCoverMedia(options.coverMedia, body);
+  const previousCover = parseFilmCoverMedia(JSON.parse(row.optionsJson).coverMedia);
+  if ('coverMedia' in changes) {
+    if (!body && changes.coverMedia != null) throw new OneClickFilmError('invalid_input', '还没有生成原片');
+    if (body) {
+      const selected = validateFilmCoverSelection(db, input.run, body, changes.coverMedia);
+      if (!selected || selected.kind === 'auto_frame') {
+        const existing = previousCover?.kind === 'auto_frame' && previousCover.sourceSignature === body.signature ? previousCover : undefined;
+        // Use the last saved automatic frame while an explicit re-selection is still pending.
+        options.coverMedia = selected && existing && selected.sourceSignature === existing.sourceSignature
+          && selected.frame === existing.frame && selected.fallback === existing.fallback && readFilmAutoCover(db, body).status === 'pending'
+          ? { ...existing, framing: selected.framing }
+          : automaticFilmCoverForDraft(db, body, selected?.framing);
+      } else {
+        options.coverMedia = resolveFilmCoverMedia(selected, body);
+      }
+    }
   }
+  const frameChanged = options.coverMedia?.kind !== 'video_frame' || previousCover?.kind !== 'video_frame'
+    || options.coverMedia.frame !== previousCover.frame || options.coverMedia.shotId !== previousCover.shotId;
   const durationSec = body ? body.frames / FINAL_EDIT_FPS : 15;
   if ('assetStickers' in changes) {
     try {
@@ -419,6 +441,7 @@ export function updatePackagingDraft(db: Database.Database, input: {
   const saved = db.prepare(`
     UPDATE one_click_film_packaging
     SET title = ?, template = ?, optionsJson = ?, subtitleCuesJson = ?, pointCuesJson = ?, audioSignature = ?,
+        coverClampSignature=CASE WHEN ? THEN NULL ELSE coverClampSignature END,
         revision = revision + 1, status = 'pending', errorMessage=NULL, updatedAt = ?
     WHERE id = ? AND revision = ?
   `).run(
@@ -427,7 +450,7 @@ export function updatePackagingDraft(db: Database.Database, input: {
     normalize(input.subtitleCues, current.subtitleCuesJson),
     normalize(input.pointCues, current.pointCuesJson),
     input.subtitleCues && body ? filmAudioSignature(body) : row.audioSignature,
-    new Date().toISOString(), row.id, row.revision,
+    Number(frameChanged), new Date().toISOString(), row.id, row.revision,
   );
   if (!saved.changes) throw new OneClickFilmError('conflict', '包装草稿已更新，请重新打开后再保存', 409);
   return listPackaging(db, input.run);

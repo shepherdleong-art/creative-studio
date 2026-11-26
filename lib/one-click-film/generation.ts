@@ -1,3 +1,5 @@
+import { scheduleFilmAutoCover } from './cover-auto.ts';
+import { readFilmBody } from './composition.ts';
 import { preparePackaging } from './packaging.ts';
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
@@ -401,6 +403,10 @@ export async function syncGenerationStatus(db: Database.Database, run: OneClickF
     if (!db.prepare('SELECT 1 FROM one_click_film_packaging WHERE runId=? AND entryCode=?').get(run.id, entryCode)) {
       preparePackaging(db, { run, codes: [entryCode], options: {}, allowPreview: true });
     }
+  }
+  for (const entry of listEntries(db, run.id)) {
+    const body = readFilmBody(db, run, entry.code);
+    if (body) scheduleFilmAutoCover(db, run, body);
   }
 }
 
