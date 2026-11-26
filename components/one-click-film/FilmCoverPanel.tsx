@@ -5,6 +5,8 @@ import { resolveFilmCoverMedia, type FilmCoverMedia } from '@/lib/one-click-film
 import { FINAL_EDIT_FPS } from '@/lib/media-core/render-contract';
 import { Segmented, Tag } from '@/components/ui/Appearance';
 import { Icon } from '@/components/ui/Icon';
+import type { OneClickFilmTemplateId } from '@/lib/one-click-film/packaging-constants';
+import { FilmCoverGenerationPanel } from './FilmCoverGenerationPanel';
 import type { FilmReview } from './ReviewStage';
 import { DETAIL_USAGE, SCENE_USAGE, type FilmImage } from './types';
 import styles from './one-click-film.module.css';
@@ -18,7 +20,7 @@ const sourceLabel = (cover: FilmCoverMedia) => {
   }
 };
 
-export function FilmCoverPanel({ media, frames, signature, shots, image, thumbnail, expanded, busy, canTakeCurrent, projectId, images,
+export function FilmCoverPanel({ media, frames, signature, shots, image, thumbnail, expanded, busy, canTakeCurrent, projectId, images, entryCode, template,
   onToggle, onSelect, onTakeCurrent }: {
   media?: FilmCoverMedia;
   frames: number;
@@ -31,12 +33,14 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
   canTakeCurrent: boolean;
   projectId: string;
   images: FilmImage[];
+  entryCode: string;
+  template: OneClickFilmTemplateId;
   onToggle: () => void;
   onSelect: (media?: FilmCoverMedia) => void;
   onTakeCurrent: () => void;
 }) {
   const cover = resolveFilmCoverMedia(media, { frames, signature });
-  const [sourceTab, setSourceTab] = useState<'video' | 'project'>(cover.kind === 'project_image' ? 'project' : 'video');
+  const [sourceTab, setSourceTab] = useState<'video' | 'project' | 'generate'>(cover.kind === 'generated_image' ? 'generate' : cover.kind === 'project_image' ? 'project' : 'video');
   const projectImages = images.filter(item => item.usage === SCENE_USAGE || item.usage === DETAIL_USAGE);
   const frame = 'frame' in cover ? cover.frame : 0;
   const shotRows = shots.map(shot => {
@@ -67,7 +71,7 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
         <button type="button" className="cap" disabled={busy || !media} onClick={() => onSelect()}>恢复默认封面</button>
       </div>
       <Segmented value={sourceTab} onChange={setSourceTab} size="small" label="封面来源"
-        options={[{ value: 'video', label: '本片画面' }, { value: 'project', label: '项目图片' }]} />
+        options={[{ value: 'video', label: '本片画面' }, { value: 'project', label: '项目图片' }, { value: 'generate', label: 'AI 生成全景' }]} />
       {sourceTab === 'video' ? <div className={styles.filmCoverPanelContent} role="tabpanel" aria-label="本片画面">
         <div className={styles.inlineActions}>
           <button type="button" className="cap" disabled={busy || !canTakeCurrent} onClick={onTakeCurrent}>取当前播放画面</button>
@@ -90,7 +94,7 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
             value={Math.max(selected.first, Math.min(selected.last, frame))} disabled={busy || selected.first === selected.last}
             onChange={event => selectFrame(event.target.valueAsNumber, selected.shot.id)} />
         </label> : null}
-      </div> : <div role="tabpanel" aria-label="项目图片">
+      </div> : sourceTab === 'project' ? <div role="tabpanel" aria-label="项目图片">
         {projectImages.length ? <div className={styles.filmCoverShots}>
           {projectImages.map(item => {
             const usage = item.usage === SCENE_USAGE ? '场景图' : '详情页图';
@@ -104,7 +108,8 @@ export function FilmCoverPanel({ media, frames, signature, shots, image, thumbna
             </button>;
           })}
         </div> : <p className={styles.hint}>暂无项目图片。可在「素材与脚本」上传场景图或详情页图片。</p>}
-      </div>}
+      </div> : <FilmCoverGenerationPanel projectId={projectId} entryCode={entryCode} template={template} images={projectImages}
+        cover={cover} busy={busy} onSelect={onSelect} />}
     </> : null}
   </section>;
 }

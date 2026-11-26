@@ -461,6 +461,42 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
       ALTER TABLE one_click_film_script_revisions ADD COLUMN modelCustom TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    version: 15,
+    sql: `
+      CREATE TABLE one_click_film_cover_assets (
+        id TEXT PRIMARY KEY,
+        runId TEXT NOT NULL REFERENCES one_click_film_runs(id) ON DELETE CASCADE,
+        projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        entryId TEXT NOT NULL REFERENCES one_click_film_entries(id) ON DELETE CASCADE,
+        entryCode TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'ready', 'failed')),
+        requestKey TEXT NOT NULL,
+        requestHash TEXT NOT NULL,
+        providerId TEXT NOT NULL,
+        model TEXT NOT NULL,
+        referenceImagesJson TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        requestedSize TEXT NOT NULL,
+        providerFingerprint TEXT NOT NULL,
+        usageSnapshotJson TEXT,
+        operationId TEXT,
+        remoteId TEXT,
+        submittedAt TEXT,
+        relativePath TEXT,
+        width INTEGER,
+        height INTEGER,
+        errorCode TEXT,
+        message TEXT,
+        nextAttemptAt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(entryId, requestKey)
+      );
+      CREATE INDEX idx_ocf_cover_assets_entry ON one_click_film_cover_assets(projectId, runId, entryId, createdAt);
+      CREATE INDEX idx_ocf_cover_assets_work ON one_click_film_cover_assets(nextAttemptAt) WHERE status IN ('queued', 'running');
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =

@@ -6,6 +6,7 @@ import type { FilmBody } from './composition.ts';
 import { parseFilmCoverMedia, type FilmCoverMedia } from './cover-media.ts';
 import { OneClickFilmError } from './errors.ts';
 import type { OneClickFilmRun } from './store.ts';
+import { resolveGeneratedFilmCoverPath } from './cover-assets.ts';
 
 export function unavailableFilmCoverImage() {
   return new OneClickFilmError('invalid_input', '当前封面图片不可用');
@@ -36,6 +37,12 @@ export function resolveFilmCoverImagePath(
   db: Database.Database, run: OneClickFilmRun, body: FilmBody, cover: Extract<FilmCoverMedia, { assetId: string }>,
 ): string {
   if (cover.kind === 'project_image') return resolveProjectCoverImagePath(db, run.projectId, cover.assetId);
+  try {
+    const file = resolveGeneratedFilmCoverPath(db, run, body.entryId, cover.assetId);
+    if (file) return file;
+  } catch {
+    throw unavailableFilmCoverImage();
+  }
   throw unavailableFilmCoverImage();
 }
 

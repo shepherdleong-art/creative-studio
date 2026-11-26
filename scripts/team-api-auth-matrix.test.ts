@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NextRequest } from 'next/server.js';
+import sharp from 'sharp';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const extensions = ['.ts', '.tsx', '/index.ts', '/index.tsx'];
@@ -577,6 +578,55 @@ try {
   assert.equal((await analyzeAssets(write(analyzeUrl, admin.cookie, { assetIds: ['batch-asset-b'] }), params('batch-a'))).status, 403,
     '管理员也不能把别的项目素材放进当前批次');
   assert.equal((await analyzeAssets(write(analyzeUrl, userA.cookie, { assetIds: ['missing-asset'] }), params('batch-a'))).status, 404);
+
+  // 全景封面候选读取走真实项目 ACL 和受管文件，生成入口失权时不进入业务处理。
+  const coverAssetRoute = await import('../app/api/one-click-film/[projectId]/cover-assets/[coverAssetId]/route.ts');
+  const filmPackagingRoute = await import('../app/api/one-click-film/[projectId]/packaging/route.ts');
+  const { getOneClickFilmReadiness } = await import('../lib/one-click-film/runtime-readiness.ts');
+  const { getOrCreateRun } = await import('../lib/one-click-film/store.ts');
+  const { createTeamAccessContext } = await import('../lib/team-service/resource-scopes.ts');
+  const { runWithAccessContext } = await import('../lib/media-core/access-context.ts');
+  assert.equal((await getOneClickFilmReadiness()).available, true);
+  const filmTime = '2026-11-26T00:00:00.000Z';
+  for (const [projectId, principal] of [['project-a', userA.principal], ['project-b', userB.principal]] as const) {
+    const run = runWithAccessContext(createTeamAccessContext({ db, principal }), () => getOrCreateRun(db, projectId));
+    db.prepare(`INSERT INTO one_click_film_entries
+      (id, runId, projectId, ordinal, code, structure, structureSource, soundMode, status, promptAspectRatio, analysisId,
+       productNameSnapshot, createdAt, updatedAt)
+      VALUES (?, ?, ?, 1, 'F01', 'scene', 'auto', 'none', 'confirmed', '3:4', 'analysis', '云朵床', ?, ?)`)
+      .run(`film-${projectId}`, run.id, projectId, filmTime, filmTime);
+  }
+  const filmCoverPath = path.join(fixtureRoot, 'storage', 'film-cover.png');
+  await sharp({ create: { width: 12, height: 16, channels: 3, background: 'blue' } }).png().toFile(filmCoverPath);
+  const insertCover = db.prepare(`INSERT INTO one_click_film_cover_assets
+    (id,runId,projectId,entryId,entryCode,status,requestKey,requestHash,providerId,model,referenceImagesJson,prompt,
+      requestedSize,providerFingerprint,relativePath,width,height,createdAt,updatedAt)
+    SELECT ?,runId,projectId,id,code,'ready',?,?, 'provider','model','[]','全景封面','864x1152','fingerprint',?,12,16,?,?
+    FROM one_click_film_entries WHERE id='film-project-a'`);
+  insertCover.run('cover-a', 'request-a', 'hash-a', 'film-cover.png', filmTime, filmTime);
+  fs.copyFileSync(filmCoverPath, path.join(fixtureRoot, 'storage', 'unregistered-cover.png'));
+  insertCover.run('cover-unregistered', 'request-u', 'hash-u', 'unregistered-cover.png', filmTime, filmTime);
+  createTeamAccessContext({ db, principal: userA.principal }).registerFile!({ absolutePath: filmCoverPath, mimeType: 'image/png',
+    references: [{ resourceType: 'project', resourceId: 'project-a', role: 'derivative' }] });
+  const readCover = (projectId: string, coverAssetId: string, cookie?: string, entryCode = 'F01') => coverAssetRoute.GET(
+    new NextRequest(get(`https://studio.example.test/api/one-click-film/${projectId}/cover-assets/${coverAssetId}?entryCode=${entryCode}`, cookie)),
+    { params: Promise.resolve({ projectId, coverAssetId }) });
+  const ownerCover = await readCover('project-a', 'cover-a', userA.cookie);
+  assert.equal(ownerCover.status, 200, await ownerCover.clone().text());
+  assert.equal(ownerCover.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await ownerCover.arrayBuffer()), fs.readFileSync(filmCoverPath));
+  assert.equal((await readCover('project-a', 'cover-a')).status, 401);
+  assert.equal((await readCover('project-a', 'cover-a', userB.cookie)).status, 403);
+  assert.equal((await readCover('project-b', 'cover-a', admin.cookie)).status, 404);
+  assert.equal((await readCover('project-a', 'cover-a', userA.cookie, 'F02')).status, 404);
+  assert.equal((await readCover('project-a', 'cover-unregistered', userA.cookie)).status, 404);
+  const coverActionUrl = 'https://studio.example.test/api/one-click-film/project-a/packaging';
+  const coverAction = { action: 'generate-cover', entryCode: 'F01', requestKey: 'matrix-cover-request' };
+  const postCover = (request: Request) => filmPackagingRoute.POST(new NextRequest(request), { params: Promise.resolve({ projectId: 'project-a' }) });
+  assert.equal((await postCover(new Request(coverActionUrl, { method: 'POST', headers: { Cookie: userA.cookie }, body: JSON.stringify(coverAction) }))).status, 403);
+  assert.equal((await postCover(write(coverActionUrl, userB.cookie, coverAction))).status, 403);
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, { ...coverAction, referenceImageIds: ['image-b'] }))).status, 403);
+  assert.equal((await postCover(write(coverActionUrl, userA.cookie, coverAction))).status, 404, '授权成功后才检查原片');
   for (const route of [
     '/api/projects/[id]/final-edit/draft',
     '/api/projects/[id]/final-edit/preflight',

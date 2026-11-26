@@ -332,20 +332,43 @@ export async function submitGatewayTaskImage(
     body.size = request.size;
   }
 
-  const url = `${cleanBase}/v1/videos`;
+  return submitAsyncGatewayImage(body, imageTransports, apiKey, cleanBase);
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+/** For callers that already delivered every project reference through strict COS transport. */
+export async function submitCosGatewayImage(
+  request: { model: string; prompt: string; size: string; imageUrls: string[] },
+  apiKey: string,
+  baseUrl: string,
+  signal?: AbortSignal,
+): Promise<GatewayTaskSubmitResult> {
+  const caps = companyImageCapsForModel(request.model);
+  if (!caps || request.imageUrls.some(url => !url.startsWith('https://'))) {
+    throw new Error('公司网关封面需要有效模型与 HTTPS 参考图。');
+  }
+  return submitAsyncGatewayImage({
+    model: request.model,
+    prompt: request.prompt,
+    size: snapCompanyImageSize(request.size, caps),
+    response_format: 'png',
+    ...(request.imageUrls.length > 0 ? { images: request.imageUrls } : {}),
+  }, request.imageUrls.map(() => 'cos-url'), apiKey, baseUrl.replace(/\/$/, ''), signal);
+}
+
+async function submitAsyncGatewayImage(
+  body: Record<string, unknown>, imageTransports: ImageTransport[], apiKey: string, cleanBase: string, signal?: AbortSignal,
+): Promise<GatewayTaskSubmitResult> {
+  const timeout = withTimeoutSignal(signal, SUBMIT_TIMEOUT_MS);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch(`${cleanBase}/v1/videos`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: timeout.signal,
     });
 
     if (!res.ok) {
@@ -369,7 +392,7 @@ export async function submitGatewayTaskImage(
 
     throw new Error(`Gateway task 未返回任务 id：${sanitizeGatewayMediaDiagnostic(safeJson(data), apiKey)}`);
   } finally {
-    clearTimeout(timer);
+    timeout.cleanup();
   }
 }
 
@@ -380,9 +403,6 @@ export async function pollGatewayTaskImage(
   startedAt: number,
   signal?: AbortSignal
 ): Promise<GatewayTaskPollResult> {
-  const cleanBase = baseUrl.replace(/\/$/, '');
-  const pollUrl = `${cleanBase}/v1/videos/${taskId}`;
-
   const elapsedMs = Date.now() - startedAt;
   const pollIntervalMs = elapsedMs < 120_000 ? 5000 : 10000;
 
@@ -396,6 +416,13 @@ export async function pollGatewayTaskImage(
 
   await sleep(Math.min(pollIntervalMs, MAX_POLL_TIME_MS - elapsedMs));
 
+  return readGatewayTaskImage(taskId, apiKey, baseUrl, signal);
+}
+
+/** Single status read for background workers that persist their next poll time. */
+export async function readGatewayTaskImage(taskId: string, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<GatewayTaskPollResult> {
+  const cleanBase = baseUrl.replace(/\/$/, '');
+  const pollUrl = `${cleanBase}/v1/videos/${taskId}`;
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const timeout = withTimeoutSignal(signal, POLL_REQUEST_TIMEOUT_MS);
@@ -448,10 +475,11 @@ export async function pollGatewayTaskImage(
 export async function downloadGatewayTaskImage(
   url: string,
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  signal?: AbortSignal,
 ): Promise<GatewayMediaDownloadResult> {
   // 结果指向网关自身的 /content 端点时需要 Bearer 鉴权；指向 CDN 时不带任何头
-  return downloadGatewayMedia(url, baseUrl, apiKey);
+  return downloadGatewayMedia(url, baseUrl, apiKey, signal);
 }
 
 function safeJson(obj: unknown, maxLen = 2000): string {

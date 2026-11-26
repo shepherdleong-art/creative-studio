@@ -4,7 +4,7 @@ import { dataRoot } from '../data-root.ts';
 import { acquireSchemaUpgradeLock, SchemaUpgradeLockTimeoutError } from '../schema-upgrade/lock.ts';
 
 /** SQLite releases this per-request write lock even when the serving process exits. */
-export async function tryFilmRequestLock(kind: 'analysis' | 'narration', identity: string[]) {
+export async function tryFilmRequestLock(kind: 'analysis' | 'narration' | 'cover-generation', identity: string[]) {
   const key = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   try {
     return await acquireSchemaUpgradeLock({

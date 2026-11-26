@@ -30,6 +30,7 @@ import {
   type ScriptStudioSchedulerController,
 } from './script-studio/scheduler.ts';
 import { drainTeamRuntime, releaseTeamRuntimeOwner } from './team-service/runtime/index.ts';
+import { stopFilmCoverGeneration } from './one-click-film/cover-generation-worker.ts';
 import { stopMaintenancePreviews } from './team-service/maintenance/preview.ts';
 
 export interface GracefulShutdownResult {
@@ -140,6 +141,7 @@ async function performGracefulShutdown(
   const remainingBudget = (): number => Math.max(0, deadline - Date.now());
   let pendingTasks = 0;
   await waitForStep(stopMaintenancePreviews(), Math.min(5000, remainingBudget()));
+  const coverGenerationStop = stopFilmCoverGeneration();
 
   // server 先关闭新业务受理，再停止各模块领取；本地模式此步骤为空操作。
   let teamDrain: Promise<void> | null = null;
@@ -238,6 +240,7 @@ async function performGracefulShutdown(
   if (teamDrain && !(await waitForStep(teamDrain, remainingBudget()))) {
     pendingTasks += 1;
   }
+  if (!(await waitForStep(coverGenerationStop, remainingBudget()))) pendingTasks += 1;
 
   try {
     pendingTasks += await waitForCountStep(

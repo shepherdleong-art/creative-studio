@@ -50,7 +50,7 @@ async function withCoverWorkDir<T>(run: OneClickFilmRun, write: (work: string) =
   finally { await fs.rm(work, { recursive: true, force: true }); }
 }
 
-async function readCoverThumbnail(imagePath: string, maxSide: number) {
+export async function readCoverThumbnail(imagePath: string, maxSide: number) {
   try {
     const image = sharp(imagePath).rotate();
     const { autoOrient: { width, height } } = await image.metadata();

@@ -10,7 +10,7 @@ const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocf-delivery-'));
 process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
 
-const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
+const { ensureOneClickFilmSchemaReady, ONE_CLICK_FILM_MIGRATIONS } = await import('../lib/one-click-film/schema.ts');
 const { getOrCreateRun } = await import('../lib/one-click-film/store.ts');
 const { upsertReviewFromDetection, approveReview } = await import('../lib/one-click-film/review.ts');
 const {
@@ -22,6 +22,7 @@ const { exportEligibility, exportEntries, exportZipEntries, listExports } = awai
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 const { composeCoverJpg } = await import('../lib/media-core/cover-compose.ts');
 const { writeFilmCover } = await import('../lib/one-click-film/cover-render.ts');
+const { listFilmCoverCandidates } = await import('../lib/one-click-film/cover-assets.ts');
 const { coverFramingGeometry, panCoverFraming } = await import('../lib/media-core/cover-framing.ts');
 
 // ── 时间基准：正文 0 秒 → 加封面后成片第 20 帧 ──
@@ -84,7 +85,15 @@ db.exec(`
   );
   INSERT INTO projects (id, name) VALUES ('proj-1', '云朵床项目'), ('proj-2', '另一个项目');
 `);
-await ensureOneClickFilmSchemaReady({ db, backupRoot: path.join(dataRoot, 'data', 'backups', 'schema-upgrades') });
+db.exec(`CREATE TABLE one_click_film_schema_migrations (version INTEGER PRIMARY KEY, appliedAt TEXT NOT NULL)`);
+for (const migration of ONE_CLICK_FILM_MIGRATIONS.filter(({ version }) => version <= 13)) {
+  db.exec(migration.sql);
+  db.prepare(`INSERT INTO one_click_film_schema_migrations VALUES (?, '2026-11-25T00:00:00.000Z')`).run(migration.version);
+}
+const upgradedSchema = await ensureOneClickFilmSchemaReady({ db, backupRoot: path.join(dataRoot, 'data', 'backups', 'schema-upgrades') });
+assert.equal(upgradedSchema.state, 'ready');
+assert.ok(upgradedSchema.backupDirectory, '新增封面资产表前保留经过验证的备份');
+assert.ok(upgradedSchema.appliedVersions.includes(15));
 const run = getOrCreateRun(db, 'proj-1');
 const now = new Date().toISOString();
 db.prepare(`INSERT INTO one_click_film_entries
@@ -210,6 +219,42 @@ for (const assetId of ['other-project', 'different-usage', 'missing-file', '../d
 }
 assert.equal(listPackaging(db, run)[0]!.revision, 6, '拒绝非法封面引用时保留已保存修订');
 
+const generatedPath = path.join(imageDir, 'generated.png');
+await sharp({ create: { width: 12, height: 16, channels: 3, background: 'blue' } }).png().toFile(generatedPath);
+const insertCoverAsset = db.prepare(`INSERT INTO one_click_film_cover_assets
+  (id, runId, projectId, entryId, entryCode, status, requestKey, requestHash, providerId, model, referenceImagesJson,
+   prompt, requestedSize, providerFingerprint, relativePath, width, height, createdAt, updatedAt)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'provider', 'model', '[]', '全景封面', '768x1024', 'fingerprint', ?, 12, 16, ?, ?)`);
+insertCoverAsset.run('generated-a', run.id, 'proj-1', 'e1', 'F01', 'ready', 'key-a', 'hash-a', 'originals/generated.png', now, now);
+insertCoverAsset.run('generated-b', run.id, 'proj-1', 'e2', 'F02', 'ready', 'key-b', 'hash-b', 'originals/generated.png', now, now);
+insertCoverAsset.run('pending-a', run.id, 'proj-1', 'e1', 'F01', 'queued', 'key-c', 'hash-c', null, now, now);
+const otherRun = getOrCreateRun(db, 'proj-2');
+db.prepare(`INSERT INTO one_click_film_entries
+  (id, runId, projectId, ordinal, code, structure, structureSource, soundMode, status, promptAspectRatio,
+    analysisId, productNameSnapshot, createdAt, updatedAt)
+  VALUES ('e3', ?, 'proj-2', 1, 'F01', 'scene', 'auto', 'none', 'confirmed', '3:4', 'a2', '书桌', ?, ?)`)
+  .run(otherRun.id, now, now);
+insertCoverAsset.run('generated-other-project', otherRun.id, 'proj-2', 'e3', 'F01', 'ready', 'key-d', 'hash-d', 'originals/generated.png', now, now);
+const reopened = new Database(dbPath, { readonly: true });
+assert.deepEqual(listFilmCoverCandidates(reopened, run, 'e1').map(candidate => [candidate.id, candidate.status, Boolean(candidate.imageUrl)]),
+  [['generated-a', 'ready', true], ['pending-a', 'queued', false]]);
+reopened.close();
+for (const assetId of ['generated-b', 'pending-a', 'generated-other-project']) {
+  assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 6,
+    options: { coverMedia: { kind: 'generated_image', assetId } },
+  }), { status: 400, message: '当前封面图片不可用' });
+}
+const generatedSelection = { kind: 'generated_image', assetId: 'generated-a', framing: { scale: 1.5, offsetX: 0, offsetY: 0.5 } };
+const generated = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 6,
+  options: { coverMedia: generatedSelection },
+})[0]!;
+assert.deepEqual(generated.options.coverMedia, generatedSelection);
+settleFixtureRender();
+const generatedExport = exportEntries(db, { run, codes: ['F01'] }).exported[0]!;
+assert.equal(generatedExport.versions.packagingRevision, 7);
+assert.deepEqual(generatedExport.versions.coverMedia, generatedSelection);
+assert.deepEqual(listExports(db, run).find(record => record.id === second.exported[0]!.id)?.versions, second.exported[0]!.versions);
+
 // EXIF 右转后，原图右侧的蓝色块位于底部；取景移到最下应仅保留蓝色。
 const orientedFile = path.join(imageDir, 'oriented.jpg');
 await sharp(Buffer.from(`<svg width="120" height="40"><path fill="red" d="M0 0h40v40H0z"/>
@@ -235,10 +280,10 @@ const edge = panCoverFraming(squareCover, { x: 800, y: 80 });
 assert.deepEqual(coverFramingGeometry({ ...squareCover, framing: edge }), { resizedWidth: 200, resizedHeight: 100, left: 0, top: 0 });
 
 // ── ZIP 清单只来自登记记录 ──
-const zipEntries = exportZipEntries(db, { run, ids: all.map((record) => record.id) });
-assert.equal(zipEntries.length, 2);
+const zipEntries = exportZipEntries(db, { run, ids: listExports(db, run).map((record) => record.id) });
+assert.equal(zipEntries.length, 3);
 assert.ok(zipEntries.every((entry) => fs.existsSync(entry.filePath)));
-assert.equal(new Set(zipEntries.map((entry) => entry.filename)).size, 2, 'ZIP 内文件名可区分');
+assert.equal(new Set(zipEntries.map((entry) => entry.filename)).size, 3, 'ZIP 内文件名可区分');
 
 db.close();
 fs.rmSync(dataRoot, { recursive: true, force: true });

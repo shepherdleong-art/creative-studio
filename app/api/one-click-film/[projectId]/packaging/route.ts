@@ -3,7 +3,7 @@ import { getDb } from '@/lib/db';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
 import { requireAccessContext } from '@/lib/media-core/access-context';
 import { syncGenerationStatus } from '@/lib/one-click-film/generation';
-import { getRunForProject } from '@/lib/one-click-film/store';
+import { getEntry, getRunForProject } from '@/lib/one-click-film/store';
 import { extractFilmPackagingPoints, listPackaging, listPackagingPreviewSources, parsePackagingOptions, preparePackaging, updatePackagingDraft, type TextCue } from '@/lib/one-click-film/packaging';
 import { filmPreviewFontCss, listFilmBgm, recognizeFilmPackagingSubtitles } from '@/lib/one-click-film/packaging-render';
 import { getFilmPreview, playableFilmBody, readFilmBody, readyHdPaths, sourceIdsForBody } from '@/lib/one-click-film/composition';
@@ -18,6 +18,10 @@ import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-c
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 import { previewFilmCover, previewFilmCoverFramingSource, previewProjectCoverThumbnail } from '@/lib/one-click-film/cover-render';
 import { validateFilmCoverSelection } from '@/lib/one-click-film/cover-source';
+import { listFilmCoverCandidates } from '@/lib/one-click-film/cover-assets';
+import { filmCoverGenerationConfig, queueFilmCoverGeneration } from '@/lib/one-click-film/cover-generation';
+import { startFilmCoverGenerationAfterReadiness } from '@/lib/one-click-film/cover-generation-worker';
+import { isOneClickFilmTemplate } from '@/lib/one-click-film/packaging-constants';
 import { extractPackagingPalette, resolveTemplateHueMode } from '@/lib/media-core/packaging-palette';
 import { resolvePackagingDir, resolvePackagingTemplateDir } from '@/lib/media-core/packaging-runtime';
 
@@ -38,6 +42,13 @@ async function __teamRouteGET(
       return new NextResponse(new Uint8Array(thumbnail.jpeg), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' } });
     }
     const run = getRunForProject(db, projectId);
+    const candidateCode = request.nextUrl.searchParams.get('coverCandidates');
+    if (candidateCode !== null) {
+      if (!run) throw new OneClickFilmError('not_found', '项目还没有一键成片记录', 404);
+      const entry = getEntry(db, run.id, candidateCode);
+      return NextResponse.json({ coverGeneration: await filmCoverGenerationConfig(db), coverCandidates: listFilmCoverCandidates(db, run, entry.id) },
+        { headers: { 'Cache-Control': 'private, no-store' } });
+    }
     const coverCode = request.nextUrl.searchParams.get('cover');
     if (coverCode !== null) {
       const saved = run && readFilmBody(db, run, coverCode);
@@ -50,6 +61,8 @@ async function __teamRouteGET(
     return NextResponse.json({
       packaging: run ? listPackaging(db, run) : [],
       previews: run ? listPackagingPreviewSources(db, run) : [],
+      coverGeneration: await filmCoverGenerationConfig(db),
+      coverCandidates: run ? listFilmCoverCandidates(db, run) : [],
       bgm: (await listFilmBgm(db)).map(({ id, name }) => ({ id, name })),
     });
   } catch (error) {
@@ -72,6 +85,24 @@ async function __teamRoutePOST(
     const body = await readJsonBody(request);
     const action = String(body.action ?? 'prepare');
     const entryCode = String(body.entryCode ?? '');
+
+    if (action === 'generate-cover') {
+      const film = readFilmBody(db, run, entryCode);
+      if (!film) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
+      if (body.template !== undefined && !isOneClickFilmTemplate(body.template)) {
+        throw new OneClickFilmError('invalid_input', '所选包装模板无效。');
+      }
+      const template = isOneClickFilmTemplate(body.template) ? body.template
+        : listPackaging(db, run).find(item => item.entryCode === entryCode)?.template ?? 'overlay-poster';
+      const aspectRatio = db.prepare(`SELECT aspectRatio FROM one_click_film_video_jobs WHERE runId=? AND entryId=? AND videoJobId=?`)
+        .pluck().get(run.id, film.entryId, film.originalVideoJobId) as string | undefined;
+      const coverCandidate = await queueFilmCoverGeneration(db, run, {
+        entryCode, requestKey: body.requestKey, providerId: body.providerId, referenceImageIds: body.referenceImageIds,
+        preference: body.preference, template, aspectRatio: aspectRatio ?? getEntry(db, run.id, entryCode).promptAspectRatio,
+      });
+      void startFilmCoverGenerationAfterReadiness();
+      return NextResponse.json({ coverCandidate }, { status: coverCandidate.status === 'queued' || coverCandidate.status === 'running' ? 202 : 200 });
+    }
 
     if (action === 'cover-framing-source') {
       const saved = readFilmBody(db, run, entryCode);
@@ -170,6 +201,7 @@ async function __teamRoutePOST(
       const playback = reviewForPlayback(review, Math.round(durationSec * 1e6));
       return NextResponse.json({
         record, subtitleWarning, subtitleWaiting,
+        coverGeneration: await filmCoverGenerationConfig(db), coverCandidates: listFilmCoverCandidates(db, run, film.entryId),
         media: { url, durationSec, shots: playback.shots, signature: film.signature, sharedFonts: access.kind === 'team', review: { ...playback, entryId: film.entryId, draft: film.draft,
           hdApproved: film.hdApproved, hdVideoUrl: hdReady ? url : null, undoMergeId: undoableMergeId(db, review) } },
       });

@@ -55,4 +55,6 @@ export async function register(): Promise<void> {
   // 创作画布：开关关闭时这里立即返回，不创建画布表、不启动画布 worker。
   const { startCanvasAfterReadiness } = await import('./lib/creative-canvas/bootstrap');
   void startCanvasAfterReadiness();
+  const { startFilmCoverGenerationAfterReadiness } = await import('./lib/one-click-film/cover-generation-worker');
+  void startFilmCoverGenerationAfterReadiness();
 }

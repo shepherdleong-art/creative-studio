@@ -57,6 +57,7 @@ export interface TeamRoutePolicy {
 const ROUTE_METHODS: Record<string, string> = {
   '/api/one-click-film/[projectId]': 'GET',
   '/api/one-click-film/[projectId]/analysis': 'PATCH POST',
+  '/api/one-click-film/[projectId]/cover-assets/[coverAssetId]': 'GET',
   '/api/one-click-film/[projectId]/exports': 'GET POST',
   '/api/one-click-film/[projectId]/exports/zip': 'POST',
   '/api/one-click-film/[projectId]/generation': 'GET POST',

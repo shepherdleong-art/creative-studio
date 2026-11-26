@@ -15,6 +15,7 @@ import { createCanvasExecutionLifecycle } from '../../creative-canvas/bootstrap.
 import { createFinalEditExecutionLifecycle } from '../../final-edit/lifecycle.ts';
 import { createBatchProductionLifecycle } from '../../batch-production/bootstrap.ts';
 import { createScriptStudioExecutionLifecycle } from '../../script-studio/bootstrap.ts';
+import { createFilmCoverGenerationLifecycle } from '../../one-click-film/cover-generation-worker.ts';
 import {
   getTeamRuntimeState,
   initializeTeamRuntimeState,
@@ -64,6 +65,7 @@ export async function startTeamServiceRuntime(): Promise<TeamRuntimeState> {
           // 首版四类模块：批量与详情页脚本必须无需页面/API 触发即可恢复。
           createBatchProductionLifecycle({ db }),
           createScriptStudioExecutionLifecycle(db),
+          createFilmCoverGenerationLifecycle(),
         ],
         ...schemaUpgradeRuntimePaths(dataRoot()),
         assertOwnerActive: () => {

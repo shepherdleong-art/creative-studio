@@ -542,7 +542,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
         <div ref={coverPanel}>
           <FilmCoverPanel media={draft.options.coverMedia} frames={bodyFrames} signature={media.signature} shots={media.review.shots}
             image={coverImage} thumbnail={thumbnail} expanded={coverExpanded} busy={busy} canTakeCurrent={position >= offset}
-            projectId={projectId} images={images}
+            projectId={projectId} images={images} entryCode={draft.entryCode} template={draft.template}
             onSelect={selectCover} onTakeCurrent={takeCurrentCover} onToggle={() => setCoverExpanded(current => !current)} />
         </div>
         {selectedPoint ? <label className={styles.editRow}>当前花字<input ref={pointInput} className="input-field" maxLength={60}

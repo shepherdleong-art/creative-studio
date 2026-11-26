@@ -83,11 +83,12 @@ const NETWORK_RETRY_DELAYS_MS = [1_000, 2_000];
 export async function downloadGatewayMedia(
   url: string,
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  signal?: AbortSignal,
 ): Promise<GatewayMediaDownloadResult> {
   for (let attempt = 0; ; attempt += 1) {
-    const result = await downloadGatewayMediaOnce(url, baseUrl, apiKey);
-    if (result.ok || result.status !== undefined || attempt >= MAX_NETWORK_ATTEMPTS - 1) {
+    const result = await downloadGatewayMediaOnce(url, baseUrl, apiKey, signal);
+    if (result.ok || result.status !== undefined || signal?.aborted || attempt >= MAX_NETWORK_ATTEMPTS - 1) {
       return result;
     }
     await new Promise((resolve) =>
@@ -99,7 +100,8 @@ export async function downloadGatewayMedia(
 async function downloadGatewayMediaOnce(
   url: string,
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  signal?: AbortSignal,
 ): Promise<GatewayMediaDownloadResult> {
   let currentUrl = url;
   let redirectCount = 0;
@@ -112,7 +114,7 @@ async function downloadGatewayMediaOnce(
 
     let response: Response;
     try {
-      response = await fetch(currentUrl, { headers, redirect: 'manual' });
+      response = await fetch(currentUrl, { headers, redirect: 'manual', signal });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const summary = sanitizeGatewayMediaDiagnostic(detail, apiKey).slice(0, MAX_ERROR_SUMMARY_LENGTH);
