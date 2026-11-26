@@ -111,13 +111,21 @@ try {
       for (const field of ['images', 'multi_shot', 'shot_type', 'size']) assert.equal(forwarded[field], undefined);
     }
   }
-  for (const [width, tail] of [[800, false], [900, true]]) {
+  for (const { width, tail, middle } of [
+    { width: 800, tail: false, middle: false },
+    { width: 900, tail: true, middle: false },
+    { width: 900, tail: true, middle: true },
+  ]) {
     const portraitPath = path.join(temp, `portrait-${width}.png`);
     await sharp({ create: { width, height: 1200, channels: 3, background: '#336699' } }).png().toFile(portraitPath);
+    const middlePath = path.join(temp, 'portrait-middle.png');
+    if (middle) await sharp({ create: { width, height: 1200, channels: 3, background: '#aa7755' } }).png().toFile(middlePath);
     const result = await openaiVideoAdapter.submit({
       model: 'qiniuyun/kling-4.0', prompt: 'portrait forwarding fixture',
       sourceImagePath: portraitPath, sourceMimeType: 'image/png', durationSec: 5, resolution: '1080p',
       ...(tail ? { tailImagePath: portraitPath, tailMimeType: 'image/png' } : {}),
+      ...(middle ? { middleFrames: [{ id: 'middle', kind: 'image', path: middlePath, mimeType: 'image/png',
+        byteSize: fs.statSync(middlePath).size }] } : {}),
     }, 'local-fake-key', `http://127.0.0.1:${port}`);
     assert.ok(result.providerTaskId);
     const forwarded = captured.at(-1);
@@ -128,6 +136,15 @@ try {
     assert.equal(forwarded.aspect_ratio, undefined);
     assert.ok(forwarded.start_image_url.startsWith('https://cos-fixture.example.com/'));
     assert.equal(Boolean(forwarded.end_image_url), tail);
+    if (middle) {
+      const middleUrls = typeof forwarded.middle_image_urls === 'string'
+        ? JSON.parse(forwarded.middle_image_urls) : forwarded.middle_image_urls;
+      assert.equal(middleUrls.length, 1);
+      assert.ok(middleUrls[0].startsWith('https://cos-fixture.example.com/'));
+      assert.notEqual(middleUrls[0], forwarded.start_image_url);
+    } else {
+      assert.equal(forwarded.middle_image_urls, undefined);
+    }
   }
   const referenceUrl = 'https://cos-fixture.example.com/reference.png';
   const reference = await openaiVideoAdapter.submitReference({
@@ -143,7 +160,7 @@ try {
   assert.equal(forwardedReference.resolution, '1080p');
   assert.equal(forwardedReference.start_image_url, undefined);
   assert.equal(forwardedReference.end_image_url, undefined);
-  assert.equal(captured.length, 9);
+  assert.equal(captured.length, 10);
   console.log('litellm video forwarding tests passed');
 } finally {
   globalThis.fetch = originalFetch;

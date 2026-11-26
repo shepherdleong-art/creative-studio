@@ -14,7 +14,10 @@ import { videoDurationError } from '../../video-duration.ts';
 import sharp from 'sharp';
 import type Database from 'better-sqlite3';
 import { snapCompanyImageSize, companyImageCapsForModel, companyImageCellExecutable, companyVideoCapsForModel, snapCompanyVideoSize, snapCompanyVideoAspectRatio } from '../../company-gateway-size.ts';
-import { QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_MODEL, qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields } from '../../company-qiniu-kling-4.ts';
+import {
+  QINIU_KLING_4_IMAGE_MAX_BYTES, QINIU_KLING_4_IMAGE_MIME_TYPES, QINIU_KLING_4_MODEL,
+  qiniuKling4FirstFrameFields, qiniuKling4ReferenceFields,
+} from '../../company-qiniu-kling-4.ts';
 import { assertCompanyTailFrameTransport } from '../../company-gateway-tail-frame.ts';
 import { validateVideoReferenceRequest } from '../../video-reference-contract.ts';
 import { companyNativeVideoModel } from '../../company-gateway-video-models.ts';
@@ -33,6 +36,7 @@ import {
 } from './company-capabilities.ts';
 import { resolveCompanyCanvasRoute, type CanvasProviderRoute } from './company-providers.ts';
 import { companyCanvasImageOutput } from './company-image-output.ts';
+import { cropCanvasVideoToThreeFour } from './company-video-output.ts';
 import { prepareCanvasDeliveryMedia, type CanvasMediaDeliverer } from './media-delivery.ts';
 import {
   CanvasAdapterError,
@@ -275,7 +279,10 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
       const requiresCos = isCompanyCapability(capability)
         && companyCanvasModelRequiresCos(capability.modelAlias);
       const hasTailRole = mediaInputs.some((input) => input.role === 'last-frame');
-      const frameRatio = context.parameters.frameAspectRatio;
+      const isReferenceMode = context.generationMode === 'reference-to-video';
+      const imageRatio = isReferenceMode ? context.parameters.aspectRatio : context.parameters.frameAspectRatio;
+      const cropImages = isKling4 && typeof imageRatio === 'string' && imageRatio !== 'adaptive'
+        && (!isReferenceMode || imageRatio === '3:4');
 
       for (const input of mediaInputs) {
         const rule = inputRuleFor(capability, input, context.generationMode);
@@ -295,8 +302,6 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         }
         // 尾帧必须走 COS（公司尾帧红线）；七牛渠道的所有素材都走 COS。
         const requireCos = requiresCos || (hasTailRole && isFrameRole(input.role));
-        const cropToAspectRatio = isKling4 && isFrameRole(input.role)
-          && typeof frameRatio === 'string' && frameRatio !== 'adaptive' ? frameRatio : undefined;
         try {
           const prepared = await prepareCanvasDeliveryMedia({
             kind: input.kind as 'image' | 'video' | 'audio',
@@ -313,8 +318,8 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
             ...(rule.mimeTypes ? { mimeTypes: rule.mimeTypes } : {}),
             ...(rule.maxBytes !== undefined ? { maxBytes: rule.maxBytes } : {}),
             ...(rule.maxDurationSec !== undefined ? { maxDurationSec: rule.maxDurationSec } : {}),
-            ...(cropToAspectRatio ? { cropToAspectRatio, maxBytes: QINIU_KLING_4_IMAGE_MAX_BYTES,
-              outputImageMimeTypes: ['image/png', 'image/jpeg'] } : {}),
+            ...(cropImages && input.kind === 'image' ? { cropToAspectRatio: imageRatio, maxBytes: QINIU_KLING_4_IMAGE_MAX_BYTES,
+              outputImageMimeTypes: QINIU_KLING_4_IMAGE_MIME_TYPES } : {}),
           }, signal);
           try {
             input.deliveryRef = await deliverer.deliver(prepared.request, signal);
@@ -390,9 +395,12 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         const durationSec = Number(context.parameters.durationSec ?? 5);
         const resolution = typeof context.parameters.resolution === 'string' ? context.parameters.resolution : undefined;
         if (context.generationMode === 'reference-to-video') {
+          const aspectRatio = String(context.parameters.aspectRatio ?? '16:9');
+          // 七牛的全能参考不接受显式 3:4，prepare 已将该档位的参考图副本裁好。
+          const gatewayAspectRatio = aspectRatio === '3:4' ? 'adaptive' : aspectRatio;
           Object.assign(body, qiniuKling4ReferenceFields(mediaInputs.flatMap(input => input.kind === 'text' ? [] : [{
             kind: input.kind, url: input.deliveryRef!,
-          }]), durationSec, String(context.parameters.aspectRatio ?? '16:9'), resolution));
+          }]), durationSec, gatewayAspectRatio, resolution));
         } else {
           const firstFrame = imageInputs.find(input => input.role === 'first-frame')!;
           if (!firstFrame.absolutePath || !await probeImageDimensions(firstFrame.absolutePath)) {
@@ -636,7 +644,6 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
           code: 'gateway_result_url_missing',
         });
       }
-      void signal;
       const downloaded = await downloadGatewayMedia(resolved, route.baseUrl, route.apiKey);
       if (!downloaded.ok) {
         throw new CanvasAdapterError(
@@ -646,8 +653,13 @@ export function createCompanyCanvasAdapter(options: CompanyCanvasAdapterOptions)
         );
       }
       if (context.mediaKind === 'image') return companyCanvasImageOutput(downloaded.buffer, context.modelAlias, context.parameters);
+      const enforceThreeFour = context.modelAlias === QINIU_KLING_4_MODEL
+        && context.generationMode === 'reference-to-video' && context.parameters.aspectRatio === '3:4';
+      const cropMode = context.inputs.some(input => input.kind === 'image') ? 'rounding-only' : 'center-crop';
       return {
-        bytes: downloaded.buffer,
+        bytes: enforceThreeFour
+          ? await cropCanvasVideoToThreeFour(downloaded.buffer, context.task.id, signal, cropMode)
+          : downloaded.buffer,
         mimeType: 'video/mp4',
       } satisfies CanvasDownloadOutcome;
     },

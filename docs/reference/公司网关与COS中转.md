@@ -74,7 +74,9 @@ Seedream 5.0 Pro 同步生图的应用超时单独沿用项目 `timeoutMs`，默
 
 七牛可灵 `qiniuyun/kling-3.0` 通过本机 LiteLLM + 公司 `/v1/videos`：`images[0]` 首帧、`end_image_url` 尾帧；Pro 默认配公司 1K 名义 `size`（3:4 实测 `1024x1366` → `1244x1660`），单提示词智能分镜用 `multi_shot=true` + `shot_type=intelligence`，关闭显式 false，不传 `multi_prompt`。上游枚举为 `intelligence` / `customize`，`intelligent` 会被拒绝。首尾帧/清晰度证据见 [2026-09-10 验证记录](../2026-09-10-七牛Kling-v3公司通道首尾帧验证.md)。
 
-七牛可灵 4.0 的图生视频画幅由首帧决定。2026-11-25 公司网关拒绝了携带 `size=1080x1440` 的关键帧请求。项目与画布的关键帧请求仅发送 `resolution` 指定清晰度。画布选择固定比例时居中裁切关键帧的 COS 上传副本，自动档跟随原首帧。画布全能参考按所选画幅提交 `aspect_ratio`。[七牛图生视频接口](https://docs.modelink.ai/api/video-fal-kling-v4) · [可灵 4.0 全能参考参数](https://fal.ai/models/kling/v4/reference-to-video/api)
+七牛可灵 4.0 的图生视频画幅由首帧决定。2026-11-25 公司网关拒绝了携带 `size=1080x1440` 的关键帧请求。项目与画布的关键帧请求仅发送 `resolution` 指定清晰度。画布选择固定比例时居中裁切关键帧的 COS 上传副本，自动档跟随原首帧。[七牛图生视频接口](https://docs.modelink.ai/api/video-fal-kling-v4)
+
+2026-11-26 公司网关实测拒绝全能参考的显式 `aspect_ratio=3:4`。画布选择 `3:4` 时，按照片的 EXIF 方向居中裁切每张参考图的上传副本，按需压到 10 MiB 以内，再用 `image_urls` 和 `adaptive` 一次提交。任务快照保存用户选择的比例，参考图顺序、用途和原文件均保留。720p、3 秒的既有样本中，720×960 参考图实返 836×1116。另一条 1080p 实测用未经裁切的 720×1280 参考图，实返 1920×1080。含图片的任务只裁齐一个编码对齐单位以内的像素误差（宽最多 6、高最多 8 像素），更大偏差保留供应商原片。纯视频参考仍在交付时按需居中裁成 3:4 并保留音轨。[七牛可灵 4.0 参考生视频参数](https://docs.modelink.ai/api/video-fal-kling-v4#createKlingV4ReferenceToVideo)
 
 - 本机服务（app 与 LiteLLM 代理）**不得暴露到公网**，公网交付只走 COS。
 - COS 密钥只在 `.env.local`，签名参数绝不进日志。

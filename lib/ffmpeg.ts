@@ -308,6 +308,8 @@ export interface VideoMediaProbe {
   width: number;
   /** 显示高（同上） */
   height: number;
+  /** 像素宽高比，随显示方向归一。未声明时由调用方按方形像素解释。 */
+  sampleAspectRatio?: number;
   fps: number;
   /** Whether metadata contains at least one audio stream. */
   hasAudio?: boolean;
@@ -317,6 +319,12 @@ export interface VideoMediaProbe {
   audioSampleRate?: number;
   format?: string;
   errorMessage?: string;
+}
+
+function parseSampleAspectRatio(value: string | undefined, swap: boolean): number | undefined {
+  const [width, height] = (value ?? '').split(':').map(Number);
+  if (width > 0 && height > 0) return swap ? height / width : width / height;
+  return undefined;
 }
 
 // Metadata-only read, not a transcode — much shorter than runFfmpeg's 30s
@@ -342,7 +350,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
     try {
       const child = spawn(
         resolveFfprobeCandidatePath(),
-        ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt,sample_rate,width,height,r_frame_rate,duration:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
+        ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt,sample_rate,width,height,sample_aspect_ratio,r_frame_rate,duration:stream_tags=rotate:stream_side_data=rotation:format=duration,format_name', '-of', 'json', filePath],
         { windowsHide: true }
       );
       let out = '';
@@ -386,7 +394,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
         if (signal?.aborted) { finish(aborted()); return; }
         if (code !== 0) { fallbackToFfmpeg(); return; }
         try {
-          const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; r_frame_rate?: string; duration?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
+          const parsed = JSON.parse(out) as { streams?: Array<{ codec_type?: string; codec_name?: string; pix_fmt?: string; sample_rate?: string; width?: number; height?: number; sample_aspect_ratio?: string; r_frame_rate?: string; duration?: string; tags?: { rotate?: string }; side_data_list?: Array<{ rotation?: number | string }> }>; format?: { duration?: string; format_name?: string } };
           const stream = parsed.streams?.find(({ codec_type }) => codec_type === 'video')
             ?? parsed.streams?.find(({ width, height }) => Number(width) > 0 && Number(height) > 0);
           const audioStream = parsed.streams?.find(({ codec_type }) => codec_type === 'audio');
@@ -401,6 +409,7 @@ export function probeVideoMedia(filePath: string, options: { signal?: AbortSigna
             videoDurationUs: Number(stream.duration) > 0 ? Math.round(Number(stream.duration) * 1e6) : undefined,
             width: Number(swap ? stream.height : stream.width) || 0,
             height: Number(swap ? stream.width : stream.height) || 0,
+            sampleAspectRatio: parseSampleAspectRatio(stream.sample_aspect_ratio, swap),
             fps: parseFrameRateFraction(stream.r_frame_rate),
             hasAudio: Boolean(audioStream),
             videoCodec: stream.codec_name || '',
@@ -468,6 +477,7 @@ function probeVideoMediaWithFfmpeg(filePath: string, ffprobeError: string, signa
         durationUs: Math.round(durationSec * 1_000_000),
         width: Number(dimensionsMatch[swap ? 2 : 1]) || 0,
         height: Number(dimensionsMatch[swap ? 1 : 2]) || 0,
+        sampleAspectRatio: parseSampleAspectRatio(videoLine.match(/\bSAR\s+(\d+:\d+)/)?.[1], swap),
         fps: fpsMatch ? Number(fpsMatch[1]) || 0 : 0,
         hasAudio: Boolean(audioLine),
         videoCodec: videoLine.match(/Video:\s*([^,\s]+)/)?.[1] || '',

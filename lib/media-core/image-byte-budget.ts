@@ -7,6 +7,7 @@ export async function encodeImageWithinByteBudget(
   longestEdge: number,
   maxBytes: number,
   signal?: AbortSignal,
+  longestEdgeMultiple = 1,
 ): Promise<Buffer<ArrayBuffer>> {
   if (!longestEdge) throw new Error('missing image dimensions');
   const targetBytes = Math.floor(maxBytes * 0.95);
@@ -16,7 +17,9 @@ export async function encodeImageWithinByteBudget(
       signal?.throwIfAborted();
       let pipeline = sharp(bytes).autoOrient();
       if (scale > 0) {
-        const maxDim = Math.max(1, Math.floor(longestEdge * 0.75 ** scale));
+        // Fixed-ratio uploads need whole ratio units on both axes after resizing.
+        const units = Math.max(1, Math.floor(longestEdge * 0.75 ** scale / longestEdgeMultiple));
+        const maxDim = units * longestEdgeMultiple;
         pipeline = pipeline.resize({ width: maxDim, height: maxDim, fit: 'inside', withoutEnlargement: true });
       }
       const candidate = await (mimeType === 'image/png'

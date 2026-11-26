@@ -137,6 +137,7 @@ try {
   assert.ok(kling4);
   registerCanvasCapability(kling4);
   let kling4Body: Record<string, unknown> = {};
+  let kling4Posts = 0;
   const deliveredKling4Frames: Array<[number, number]> = [];
   const kling4Adapter = createCompanyCanvasAdapter({
     db,
@@ -152,6 +153,11 @@ try {
     fetchImpl: async (_input, init) => {
       assert.equal(init?.method, 'POST');
       kling4Body = JSON.parse(String(init.body));
+      kling4Posts++;
+      if (kling4Body.aspect_ratio === '3:4') {
+        return Response.json({ code: 'invalid_kling_v4_request',
+          message: 'Kling v4 does not support aspect_ratio "3:4" for this operation' }, { status: 400 });
+      }
       return Response.json({ id: 'test-kling4' });
     },
   });
@@ -176,18 +182,32 @@ try {
   assert.equal(kling4Body.aspect_ratio, undefined);
   assert.deepEqual(deliveredKling4Frames, roles.map(() => [720, 1080]));
 
-  frames.parameters.frameAspectRatio = '3:4';
-  deliveredKling4Frames.length = 0;
-  await kling4Adapter.prepare(frames);
-  await kling4Adapter.submit(frames);
-  assert.deepEqual(deliveredKling4Frames, roles.map(() => [720, 960]));
-  assert.equal(kling4Body.size, undefined);
-  assert.equal(kling4Body.aspect_ratio, undefined);
-  assert.notEqual(kling4Body.start_image_url, 'https://canvas-cos.test/frame-0.png');
-  assert.deepEqual(fs.readFileSync(frames.inputs[0].absolutePath!), portraitFrameBytes);
-  assert.deepEqual(uploadCopies(), []);
+  for (const generationMode of ['image-to-video', 'frames-to-video'] as const) {
+    const inputs = generationMode === 'image-to-video'
+      ? frames.inputs.filter(input => input.role !== 'middle-frame') : frames.inputs;
+    for (const resolution of ['720p', '1080p']) {
+      const request = { ...frames, generationMode, inputs, parameters: { durationSec: 3, resolution, frameAspectRatio: '3:4' } };
+      deliveredKling4Frames.length = 0;
+      await kling4Adapter.prepare(request);
+      await kling4Adapter.submit(request);
+      assert.deepEqual(deliveredKling4Frames, inputs.map(() => [720, 960]));
+      assert.equal(kling4Body.resolution, resolution);
+      assert.equal(kling4Body.size, undefined);
+      assert.equal(kling4Body.aspect_ratio, undefined);
+      assert.deepEqual(kling4Body.images, [inputs[0].deliveryRef]);
+      assert.equal(kling4Body.start_image_url, inputs[0].deliveryRef);
+      assert.equal(kling4Body.end_image_url, inputs.at(-1)!.deliveryRef);
+      assert.notEqual(kling4Body.start_image_url, 'https://canvas-cos.test/frame-0.png');
+      const middleFrames = inputs.filter(input => input.role === 'middle-frame');
+      assert.deepEqual(kling4Body.middle_image_urls, middleFrames.length ? middleFrames.map(input => input.deliveryRef) : undefined);
+      for (const input of inputs) assert.deepEqual(fs.readFileSync(input.absolutePath!), portraitFrameBytes);
+      assert.deepEqual(uploadCopies(), []);
+      console.log(`PASS: Kling 4.0 ${generationMode} 3:4 ${resolution} delivery and request`);
+    }
+  }
 
-  const firstFrame = { ...frames, generationMode: 'image-to-video' as const, inputs: [frames.inputs[0]] };
+  const firstFrame = { ...frames, generationMode: 'image-to-video' as const, inputs: [frames.inputs[0]],
+    parameters: { ...frames.parameters, frameAspectRatio: '3:4' } };
   deliveredKling4Frames.length = 0;
   await kling4Adapter.prepare(firstFrame);
   await kling4Adapter.submit(firstFrame);
@@ -219,12 +239,19 @@ try {
   assert.deepEqual(kling4Body.video_urls, ['https://canvas-cos.test/reference.mp4']);
   assert.equal(kling4Body.images, undefined);
   assert.equal(kling4Body.aspect_ratio, '16:9');
-  for (const ratio of ['3:4', '4:3', '21:9', 'adaptive']) {
+  for (const [ratio, gatewayRatio] of [
+    ['3:4', 'adaptive'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:3', '4:3'], ['21:9', '21:9'], ['adaptive', 'adaptive'],
+  ]) {
     reference.parameters.aspectRatio = ratio;
     await kling4Adapter.prepare(reference);
+    const postsBeforeSubmit = kling4Posts;
     await kling4Adapter.submit(reference);
-    assert.equal(kling4Body.aspect_ratio, ratio);
-    assert.deepEqual(kling4Body.image_urls, ['https://canvas-cos.test/frame-0.png']);
+    assert.equal(kling4Posts, postsBeforeSubmit + 1);
+    assert.equal(kling4Body.aspect_ratio, gatewayRatio);
+    assert.equal(reference.parameters.aspectRatio, ratio);
+    assert.deepEqual(kling4Body.image_urls, [reference.inputs[0].deliveryRef]);
+    assert.equal(reference.inputs[0].deliveryRef === 'https://canvas-cos.test/frame-0.png', ratio !== '3:4');
+    assert.deepEqual(kling4Body.video_urls, ['https://canvas-cos.test/reference.mp4']);
   }
   await assert.rejects(kling4Adapter.prepare({ ...reference, inputs: [] }), /至少/);
 
@@ -250,6 +277,73 @@ try {
   await kling4CosAdapter.submit(largeKling4Reference);
   assert.equal(kling4Body.resolution, '1080p');
   assert.deepEqual(kling4Body.image_urls, [largeKling4Reference.inputs[0].deliveryRef]);
+
+  // Exercise the actual bytes handed to COS before the generation request.
+  const landscapePath = path.join(root, 'landscape-reference.png');
+  const landscapeBytes = await sharp(pixels.subarray(0, 1280 * 720 * 4), {
+    raw: { width: 1280, height: 720, channels: 4 },
+  }).png().toBuffer();
+  fs.writeFileSync(landscapePath, landscapeBytes);
+  const photoReferences = context(kling4, landscapePath, landscapeBytes, 'image/png');
+  photoReferences.inputs.push({ ...photoReferences.inputs[0], refId: 'ref2', role: 'product', orderIndex: 1,
+    absolutePath: rotatedFramePath, mimeType: 'image/jpeg', byteSize: rotatedFrameBytes.length });
+  photoReferences.parameters = { durationSec: 3, resolution: '1080p', aspectRatio: '3:4' };
+  uploads.length = 0;
+  await kling4CosAdapter.prepare(photoReferences);
+  assert.equal(uploads.length, 2);
+  const photoSizes = await Promise.all(uploads.map(async upload => {
+    const { width, height } = await sharp(upload.bytes).metadata();
+    return [width, height];
+  }));
+  assert.deepEqual(photoSizes, [[540, 720], [720, 960]], '16:9 and EXIF-oriented 9:16 are both cropped before upload');
+  const centerPixels = await sharp(landscapeBytes).extract({ left: 370, top: 0, width: 540, height: 720 }).raw().toBuffer();
+  assert.ok((await sharp(uploads[0].bytes).raw().toBuffer()).equals(centerPixels), 'the upload contains the centered crop, without stretching');
+  assert.ok(fs.readFileSync(landscapePath).equals(landscapeBytes));
+  assert.deepEqual(fs.readFileSync(rotatedFramePath), rotatedFrameBytes);
+  await kling4CosAdapter.submit(photoReferences);
+  assert.deepEqual(kling4Body.image_urls, photoReferences.inputs.map(input => input.deliveryRef));
+  assert.equal(kling4Body.aspect_ratio, 'adaptive');
+  assert.equal(kling4Body.start_image_url, undefined);
+  assert.deepEqual(uploadCopies(), []);
+
+  const exactPhoto = await sharp(landscapeBytes).extract({ left: 0, top: 0, width: 540, height: 720 }).png().toBuffer();
+  const exactPath = path.join(root, 'exact-3x4.png');
+  fs.writeFileSync(exactPath, exactPhoto);
+  const alreadyPrepared = context(kling4, exactPath, exactPhoto, 'image/png');
+  alreadyPrepared.parameters = photoReferences.parameters;
+  uploads.length = 0;
+  await kling4CosAdapter.prepare(alreadyPrepared);
+  assert.equal(uploads.length, 1);
+  assert.ok(uploads[0].bytes.equals(exactPhoto), 'a compliant 3:4 photo keeps its original bytes');
+
+  const invalidPhoto = Buffer.from('invalid png');
+  const invalidPath = path.join(root, 'invalid-reference.png');
+  fs.writeFileSync(invalidPath, invalidPhoto);
+  const invalidReference = context(kling4, invalidPath, invalidPhoto, 'image/png');
+  invalidReference.parameters = photoReferences.parameters;
+  await assert.rejects(kling4CosAdapter.prepare(invalidReference), (error: unknown) => error instanceof CanvasAdapterError
+    && error.stage === 'prepare' && error.code === 'reference_aspect_ratio_failed');
+  assert.equal(uploads.length, 1, 'a failed crop must not upload the reference');
+
+  const matchingWidth = 1797;
+  const matchingHeight = 2396;
+  const matchingPng = await sharp(pixels.subarray(0, matchingWidth * matchingHeight * 4), {
+    raw: { width: matchingWidth, height: matchingHeight, channels: 4 },
+  }).png().toBuffer();
+  assert.ok(matchingPng.length > 10 * 1024 * 1024);
+  const matchingPath = path.join(root, 'large-3x4.png');
+  fs.writeFileSync(matchingPath, matchingPng);
+  const matchingPhoto = context(kling4, matchingPath, matchingPng, 'image/png');
+  matchingPhoto.parameters = photoReferences.parameters;
+  uploads.length = 0;
+  await kling4CosAdapter.prepare(matchingPhoto);
+  assert.equal(uploads.length, 1);
+  const reduced = await sharp(uploads[0].bytes).metadata();
+  assert.ok(uploads[0].bytes.length <= 10 * 1024 * 1024);
+  assert.equal(reduced.hasAlpha, true);
+  assert.equal(reduced.width * 4, reduced.height * 3, 'shrinking to meet the byte budget must retain exact 3:4');
+  assert.ok(fs.readFileSync(matchingPath).equals(matchingPng));
+  assert.deepEqual(uploadCopies(), []);
   const uploadCount = uploads.length;
   await assert.rejects(kling4CosAdapter.prepare({
     ...reference, inputs: [{ ...reference.inputs[1], byteSize: 201 * 1024 * 1024 }],

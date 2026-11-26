@@ -112,13 +112,15 @@ export async function prepareCanvasDeliveryMedia(
     const mimeType = metadata.hasAlpha && allowedMime.includes('image/png')
       ? 'image/png' : allowedMime.includes('image/jpeg') ? 'image/jpeg' : request.mimeType;
     const { width, height } = metadata.autoOrient;
-    const crop = cropToAspectRatio ? frameCrop(width, height, cropToAspectRatio) : null;
-    if (!crop && bytes.length <= maxBytes && allowedMime.includes(request.mimeType)) {
+    const ratioUnits = cropToAspectRatio?.split(':').map(Number);
+    const crop = ratioUnits ? centerCrop(width, height, ratioUnits) : null;
+    const needsOrientation = ratioUnits !== undefined && (metadata.orientation ?? 1) !== 1;
+    if (!crop && !needsOrientation && bytes.length <= maxBytes && allowedMime.includes(request.mimeType)) {
       return { request: { ...request, imageCompression: false }, dispose };
     }
     const image = crop ? await sharp(bytes).autoOrient().extract(crop).png().toBuffer() : bytes;
     const compressed = await encodeImageWithinByteBudget(image, mimeType,
-      Math.max(crop?.width ?? width, crop?.height ?? height), maxBytes, signal);
+      Math.max(crop?.width ?? width, crop?.height ?? height), maxBytes, signal, ratioUnits ? Math.max(...ratioUnits) : 1);
     const prepared = { ...request, mimeType, byteSize: compressed.length, imageCompression: false as const };
     const remainingProblems = precheckCanvasDeliveryMedia(prepared, options);
     if (remainingProblems.length) throw new Error('compressed image failed validation');
@@ -132,8 +134,9 @@ export async function prepareCanvasDeliveryMedia(
     await dispose();
     signal?.throwIfAborted();
     if (cropToAspectRatio) {
-      throw new CanvasAdapterError('prepare', `无法按 ${cropToAspectRatio} 准备关键帧，请检查素材尺寸，任务未提交。`, {
-        code: 'frame_aspect_ratio_failed',
+      const label = request.isFrameImage ? '关键帧' : '参考图';
+      throw new CanvasAdapterError('prepare', `无法按 ${cropToAspectRatio} 准备${label}，请检查素材尺寸，任务未提交。`, {
+        code: request.isFrameImage ? 'frame_aspect_ratio_failed' : 'reference_aspect_ratio_failed',
       });
     }
     throw new CanvasAdapterError('prepare', '图片自动压缩失败，请更换素材后重试，任务未提交。', { code: 'image_compression_failed' });
@@ -162,12 +165,11 @@ async function prepareMiniMaxH3CanvasImage(request: CanvasDeliveryRequest, maxBy
   }
 }
 
-function frameCrop(width: number, height: number, aspectRatio: string) {
-  const [ratioWidth, ratioHeight] = aspectRatio.split(':').map(Number);
+function centerCrop(width: number, height: number, [ratioWidth, ratioHeight]: number[]) {
   const units = Math.floor(Math.min(width / ratioWidth, height / ratioHeight));
   const cropWidth = units * ratioWidth;
   const cropHeight = units * ratioHeight;
-  if (!Number.isFinite(units) || cropWidth <= 0 || cropHeight <= 0) throw new Error('invalid frame aspect ratio');
+  if (!Number.isFinite(units) || cropWidth <= 0 || cropHeight <= 0) throw new Error('invalid crop aspect ratio');
   if (cropWidth === width && cropHeight === height) return null;
   return { left: Math.floor((width - cropWidth) / 2), top: Math.floor((height - cropHeight) / 2),
     width: cropWidth, height: cropHeight };

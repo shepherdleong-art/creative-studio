@@ -40,7 +40,7 @@ const kling4: CanvasModelCapability = {
   modeHints: {
     'image-to-video': '按顺序接入首帧及可选尾帧。自动跟随首帧，选定比例后居中裁切上传副本。',
     'frames-to-video': '按顺序接入 3–10 张图片。自动跟随首帧，选定比例后居中裁切上传副本。',
-    'reference-to-video': '接入参考图片或视频，可在同一任务中混用。',
+    'reference-to-video': '图片和视频可混用。选 3:4 时，先把参考图居中裁成 3:4 再生成。带图任务若返回横片，会保留完整画面。仅用视频参考时，成片按需居中裁切。',
   },
   inputs: [
     { kind: 'image', roles: ['first-frame'], min: 1, max: 1, modes: ['image-to-video', 'frames-to-video'] },
