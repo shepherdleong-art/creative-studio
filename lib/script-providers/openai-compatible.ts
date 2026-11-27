@@ -16,7 +16,11 @@ import {
   type LlmUsageContext,
 } from '../usage-llm.ts';
 import { readSseStream } from './sse.ts';
-import { safeProviderErrorHint } from './error-diagnostics.ts';
+import {
+  LLM_REGIONAL_ENDPOINT_REQUIRED,
+  PROVIDER_REGIONAL_ENDPOINT_HINT,
+  safeProviderErrorHint,
+} from './error-diagnostics.ts';
 import { runLlmTransport, type LlmExecutionTransport } from './transport-execution.ts';
 
 const DEFAULT_CHAT_TIMEOUT_MS = 120_000;
@@ -215,6 +219,15 @@ export async function chatCompletion(
           const performed = await perform(requestBody);
           const rejected = !performed.response.ok
             && temperatureRejected(requestBody, performed.response.status, performed.errText);
+          let errorCode: string | undefined;
+          if (!performed.response.ok) {
+            errorCode = `http_${performed.response.status}`;
+            if (rejected) {
+              errorCode = 'temperature_rejected';
+            } else if (performed.response.status === 400 && safeProviderErrorHint(performed.errText) === PROVIDER_REGIONAL_ENDPOINT_HINT) {
+              errorCode = LLM_REGIONAL_ENDPOINT_REQUIRED;
+            }
+          }
           return {
             value: performed,
             terminalState: performed.response.ok ? 'succeeded' : 'failed',
@@ -223,7 +236,7 @@ export async function chatCompletion(
               ? runtime ? llmTransportActualCost(runtime, String(requestBody.model || model)) : null
               : rejected ? { currency: 'CNY', minor: 0 } : null,
             remoteTerminal: performed.response.ok || !rejected,
-            errorCode: performed.response.ok ? undefined : rejected ? 'temperature_rejected' : `http_${performed.response.status}`,
+            errorCode,
           };
         },
       });

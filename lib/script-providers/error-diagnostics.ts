@@ -1,4 +1,6 @@
 export const PROVIDER_CONTENT_FILTER_HINT = '上游内容审核拒绝';
+export const PROVIDER_REGIONAL_ENDPOINT_HINT = '上游账号要求使用区域端点或配置自定义域名';
+export const LLM_REGIONAL_ENDPOINT_REQUIRED = 'llm_regional_endpoint_required';
 
 /**
  * Provider errors are persisted by callers. Only return locally defined labels;
@@ -26,6 +28,9 @@ export function safeProviderErrorHint(body: string): string {
     if (!/^\s*</.test(body)) message = body;
   }
 
+  if (/\buse the regional endpoint or create a custom domain for the account\b/i.test(message)) {
+    return PROVIDER_REGIONAL_ENDPOINT_HINT;
+  }
   if (code === 'context_length_exceeded' || /maximum context length|context[_ ](?:length|window).*(?:exceed|too long)|too many tokens/i.test(message)) {
     return '上下文长度超限';
   }

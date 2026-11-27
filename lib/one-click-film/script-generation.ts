@@ -141,6 +141,7 @@ async function generateCopy(input: {
       title?: unknown; angle?: unknown; outline?: unknown; narration?: unknown; shots?: unknown;
     }>({
       providerId: provider.id, systemPrompt: SCRIPT_SYSTEM_PROMPT, userPrompt, maxTokens: 3600,
+      retryAfterBadRequest: true,
       usageContext: { enabled: true, projectId: input.run.projectId, refType: 'one-click-film-script', refId: input.run.id },
       executionContext: { taskId: input.run.id, step: `script-${input.code}`, inputRevision: revision,
         scope: { resourceType: 'project', resourceId: input.run.projectId } },

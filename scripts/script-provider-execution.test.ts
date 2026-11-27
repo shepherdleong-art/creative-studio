@@ -129,6 +129,36 @@ try {
   assert.deepEqual(await call('user-a', 'fallback', { temperature: 0.2 }), { fallback: true });
   assert.equal(fallbackPosts, 2, '回执已落盘但业务 result 尚未结算时，也必须从持久检查点恢复且不重新 POST');
 
+  let regionalPosts = 0;
+  configureProvider('openai-compatible', 'GPT-5-6-Luna-Standard');
+  globalThis.fetch = async () => {
+    regionalPosts += 1;
+    if (regionalPosts === 1) return new Response('Bad Request', { status: 400 });
+    if (regionalPosts === 2) {
+      return Response.json({ error: { message: 'Please use the regional endpoint or create a custom domain for the account.' } },
+        { status: 400 });
+    }
+    return Response.json({ choices: [{ message: { content: '{"retry":true}' } }] });
+  };
+  await assert.rejects(call('user-a', 'regional-endpoint'), /HTTP 400/);
+  await assert.rejects(call('user-a', 'regional-endpoint'), /执行台账/);
+  assert.equal(regionalPosts, 1);
+  const userRetry = { retryAfterBadRequest: true };
+  await assert.rejects(call('user-a', 'regional-endpoint', userRetry), /区域端点/);
+  assert.equal(regionalPosts, 2, '一次点击最多提交一次明确被网关拒绝的原请求');
+  assert.deepEqual(await call('user-a', 'regional-endpoint', userRetry), { retry: true });
+  assert.deepEqual(await call('user-a', 'regional-endpoint', userRetry), { retry: true });
+  assert.equal(regionalPosts, 3, '重试成功后沿用检查点');
+  assert.deepEqual(db.prepare(`
+    SELECT o.businessAttemptNo, o.status, a.errorCode FROM execution_operations o
+    JOIN execution_attempts a ON a.id=o.currentAttemptId
+    WHERE o.taskId='regional-endpoint' ORDER BY o.businessAttemptNo
+  `).all(), [
+    { businessAttemptNo: 1, status: 'failed', errorCode: 'http_400' },
+    { businessAttemptNo: 2, status: 'failed', errorCode: 'llm_regional_endpoint_required' },
+    { businessAttemptNo: 3, status: 'succeeded', errorCode: null },
+  ]);
+
   configureProvider('openai-responses');
   globalThis.fetch = async () => sse([
     'data: {"type":"response.output_text.delta","delta":"{\\"protocol\\":\\"responses\\"}"}\n\n',
@@ -227,7 +257,7 @@ try {
   const unknownOperationId = db.prepare("SELECT id FROM execution_operations WHERE taskId = 'network-unknown'").pluck().get();
   for (let repeat = 0; repeat < 2; repeat += 1) {
     await assert.rejects(
-      call('user-b', 'network-unknown', { temperature: 0.2 }),
+      call('user-b', 'network-unknown', { temperature: 0.2, retryAfterBadRequest: true }),
       (error: unknown) => error instanceof Error && error.message === 'LLM 调用结果尚未核清，未自动重提',
     );
   }

@@ -26,6 +26,7 @@ import {
   usesAnthropicMessages,
 } from './anthropic-messages';
 import { geminiCompleteJson } from './gemini';
+import { LLM_REGIONAL_ENDPOINT_REQUIRED, PROVIDER_REGIONAL_ENDPOINT_HINT } from './error-diagnostics.ts';
 import { toScriptProviderMeta } from './config';
 import { isCosMediaConfigured, tryUploadBufferToCosAndSign } from '../cos-media.ts';
 import type { LlmUsageContext, LlmUsageContextInput } from '../usage-llm.ts';
@@ -154,6 +155,8 @@ export interface CompleteJsonInput {
   preserveImageBytes?: boolean;
   usageContext?: LlmUsageContextInput;
   executionContext?: LlmExecutionContext;
+  /** A new user action may retry an earlier, definitive HTTP 400 for the same input. */
+  retryAfterBadRequest?: boolean;
   onTextDelta?: (accumulated: string) => void;
   onReasoningDelta?: (accumulated: string) => void;
 }
@@ -361,14 +364,32 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
   input.signal?.throwIfAborted();
   const provider = providerExecutionSnapshot(runtime);
   let snapshot: LlmOperationSnapshot = { request: persistentRequest(input), provider };
-  const inputRevision = context.inputRevision ?? 'r1';
-  const operationKey = `llm/${context.taskId}/${context.step}/${inputRevision}`;
+  const revision = context.inputRevision ?? 'r1';
+  let inputRevision = revision;
+  let operationKey = `llm/${context.taskId}/${context.step}/${inputRevision}`;
   const requiredPools = context.requiredPools ?? ['llm:remote'];
   const quote = llmExecutionQuote(runtime, runtime.model);
   let inputHash = createHash('sha256').update(JSON.stringify({ snapshot, context })).digest('hex');
-  const existing = getDb().prepare(`
-    SELECT inputSnapshotJson, inputHash FROM execution_operations WHERE actorId = ? AND operationKey = ?
-  `).get(access.actor.userId, operationKey) as { inputSnapshotJson: string; inputHash: string } | undefined;
+  const findOperation = getDb().prepare<[string, string], {
+    inputSnapshotJson: string;
+    inputHash: string;
+    status: OperationRecord['status'];
+    terminalState: string | null;
+    errorCode: string | null;
+  }>(`
+    SELECT o.inputSnapshotJson, o.inputHash, o.status, a.terminalState, a.errorCode
+    FROM execution_operations o LEFT JOIN execution_attempts a ON a.id = o.currentAttemptId
+    WHERE o.actorId = ? AND o.operationKey = ?
+  `);
+  let existing = findOperation.get(access.actor.userId, operationKey);
+  let retry = 0;
+  while (input.retryAfterBadRequest && existing?.status === 'failed' && existing.terminalState === 'failed'
+    && (existing.errorCode === 'http_400' || existing.errorCode === LLM_REGIONAL_ENDPOINT_REQUIRED)) {
+    retry += 1;
+    inputRevision = `${revision}:retry-${retry}`;
+    operationKey = `llm/${context.taskId}/${context.step}/${inputRevision}`;
+    existing = findOperation.get(access.actor.userId, operationKey);
+  }
   if (existing) {
     const persisted = JSON.parse(existing.inputSnapshotJson) as LlmOperationSnapshot;
     const comparable = (request: CompleteJsonInput) => JSON.stringify({ ...persistentRequest(request), model: undefined });
@@ -377,6 +398,10 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
       inputHash = existing.inputHash;
     }
   }
+  const businessAttempt = context.businessAttempt ?? {
+    id: retry === 0 ? `${context.taskId}:${context.step}` : operationKey,
+    number: retry + 1,
+  };
   const enqueue = () => moduleRuntime.facade.enqueue({
     operationKey,
     actor: { userId: access.actor.userId },
@@ -385,7 +410,7 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
     taskId: context.taskId,
     step: context.step,
     inputRevision,
-    businessAttempt: context.businessAttempt ?? { id: `${context.taskId}:${context.step}`, number: 1 },
+    businessAttempt,
     inputSnapshot: snapshot,
     inputHash,
     continuationKey: LLM_CONTINUATION_KEY,
@@ -405,7 +430,10 @@ export async function completeJson<T>(input: CompleteJsonInput): Promise<T> {
       return parseJsonResponse<T>(rawText, runtime.name);
     }
     if (operation.status === 'failed') {
-      throw new Error('LLM 调用失败，请查看执行台账', { cause: llmOperationFailureCode(operation) });
+      const cause = llmOperationFailureCode(operation);
+      const message = cause === LLM_REGIONAL_ENDPOINT_REQUIRED
+        ? PROVIDER_REGIONAL_ENDPOINT_HINT : 'LLM 调用失败，请查看执行台账';
+      throw new Error(message, { cause });
     }
     if (operation.status === 'unknown' || operation.status === 'reconciling') {
       throw unknownLlmOperation(operation);
