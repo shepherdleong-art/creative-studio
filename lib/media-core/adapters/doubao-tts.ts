@@ -30,10 +30,15 @@ import {
 import { getExecutionModuleRuntime } from '../execution/module-runtime.ts';
 import { getDb } from '../../db.ts';
 import { withMediaResource } from '../media-resource-gate.ts';
+import type { TtsVoice } from '../tts-voice.ts';
 
 export const DOUBAO_PREVIEW_TEXT = '你好，我是豆包语音助手，这是当前音色和语速的试听效果。';
 
-export const DOUBAO_VOICES = [
+export const DOUBAO_VOICES: readonly TtsVoice[] = [
+  { id: 'zh_female_tianmeiyueyue_uranus_bigtts', label: '甜美悦悦 2.0', previewUrl: '/voice-previews/tianmeiyueyue-2.mp3' },
+  { id: 'zh_female_qingchezizi_uranus_bigtts', label: '清澈梓梓 2.0', previewUrl: '/voice-previews/qingchezizi-2.mp3' },
+  { id: 'zh_male_liufei_uranus_bigtts', label: '刘飞 2.0', previewUrl: '/voice-previews/liufei-2.mp3' },
+  { id: 'ICL_uranus_zh_male_qinglangwenrun_tob', label: '清朗温润 2.0', previewUrl: '/voice-previews/qinglangwenrun-2.mp3' },
   { id: 'zh_female_vv_uranus_bigtts', label: 'Vivi 2.0' },
   { id: 'zh_male_dayi_saturn_bigtts', label: '大壹' },
   { id: 'zh_female_mizai_saturn_bigtts', label: '黑猫侦探社咪仔' },

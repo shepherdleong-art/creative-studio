@@ -17,6 +17,7 @@ async function __teamRouteGET() {
       hasApiKey,
       configured: Boolean(row.enabled && hasApiKey),
       voices: adapter.voices,
+      defaultVoice: adapter.defaultVoice,
       description: adapter.description,
     };
   });

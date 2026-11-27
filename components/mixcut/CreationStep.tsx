@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { MixcutContextResponse } from '@/lib/final-edit/types';
 import type { ScriptSwitchResolution } from '@/lib/final-edit/mixcut-creation-state';
+import type { TtsVoice } from '@/lib/media-core/tts-voice';
 import {
   buildScriptDurationAdvisory,
   countScriptContentCharacters,
@@ -20,7 +21,8 @@ export interface MixcutTtsProviderView {
   enabled: number | boolean;
   hasApiKey: boolean;
   configured: boolean;
-  voices: Array<{ id: string; label: string }>;
+  voices: TtsVoice[];
+  defaultVoice?: string;
 }
 
 export interface MixcutVisionProviderView {
@@ -175,8 +177,8 @@ export function CreationStep({
   onProviderChange: (providerId: string) => void;
   onVoiceChange: (voice: string) => void;
   onSpeedChange: (speed: number) => void;
-  onPreviewVoice: () => void;
-  previewingVoice: boolean;
+  onPreviewVoice: (voice: TtsVoice) => void;
+  previewingVoice: string | null;
   visionProviders: MixcutVisionProviderView[];
   visionProviderId: string;
   onVisionProviderChange: (providerId: string) => void;
@@ -212,11 +214,6 @@ export function CreationStep({
   const hasUsableVisionProvider = visionOptions.some((item) => item.configured);
   const busy = submitting || Boolean(job && ['queued', 'running', 'needs_input'].includes(job.status));
   const progress = Math.max(0, Math.min(1, Number(job?.progress) || 0));
-
-  const auditionVoice = (voiceId: string) => {
-    if (voiceId !== voice) onVoiceChange(voiceId);
-    onPreviewVoice();
-  };
 
   return (
     <>
@@ -283,11 +280,13 @@ export function CreationStep({
             {voices.map((item) => (
               <div key={item.id} role="button" tabIndex={0} className={`${styles.voice} ${item.id === voice ? styles.voiceOn : ''}`}
                 onClick={() => !busy && onVoiceChange(item.id)}
-                onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !busy) onVoiceChange(item.id); }}>
+                onKeyDown={(event) => {
+                  if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ') && !busy) onVoiceChange(item.id);
+                }}>
                 <div className={styles.voiceVi}><Icon name="mic" size={18} /></div>
                 <div className={styles.voiceN}>{item.label}</div>
-                <button type="button" className={styles.voiceTry} disabled={previewingVoice || !provider?.configured || busy} onClick={(event) => { event.stopPropagation(); auditionVoice(item.id); }}>
-                  <Icon name="play" size={9} />{previewingVoice && item.id === voice ? '生成中…' : '试听'}
+                <button type="button" className={styles.voiceTry} disabled={Boolean(previewingVoice) || (!item.previewUrl && !provider?.configured) || busy} onClick={(event) => { event.stopPropagation(); onPreviewVoice(item); }}>
+                  <Icon name="play" size={9} />{previewingVoice === item.id ? '加载中…' : '试听'}
                 </button>
               </div>
             ))}

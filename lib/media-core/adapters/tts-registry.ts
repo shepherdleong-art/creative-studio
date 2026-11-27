@@ -3,6 +3,7 @@ import { DOUBAO_PREVIEW_TEXT, DOUBAO_VOICES, doubaoSpeechUrl, synthesizeDoubaoNa
 import { speechUrl, synthesizeVapiNarration, synthesizeVapiPreview, VAPI_PREVIEW_TEXT, VAPI_VOICES } from './vapi-qwen-tts.ts';
 import type { TtsUsageContext } from '../../usage-tts.ts';
 import type { SyncOperationContext } from '../execution/sync-operation.ts';
+import type { TtsVoice } from '../tts-voice.ts';
 
 export interface TtsAdapterInput {
   provider: {
@@ -32,7 +33,7 @@ export interface FinalEditTtsAdapter {
   alignmentModel?: string;
   providesWordTimings?: boolean;
   description: string;
-  voices: ReadonlyArray<{ id: string; label: string }>;
+  voices: readonly TtsVoice[];
   defaultVoice: string;
   previewText: string;
   validateBaseUrl(value: string): string;

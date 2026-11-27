@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { playTtsVoicePreview } from '@/components/media/play-tts-voice-preview';
+import { defaultTtsVoice, type TtsVoice } from '@/lib/media-core/tts-voice';
 import { ProjectInfoDialog, type ProjectInfoValue } from '@/components/ProjectInfoDialog';
 import {
   createScriptEditorState,
@@ -111,7 +113,7 @@ export default function MixcutPanel({
   const [preparedGroup, setPreparedGroup] = useState<FinalEditGroupView | null>(null);
   const [recentGroups, setRecentGroups] = useState<FinalEditGroupView[]>([]);
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [previewingVoice, setPreviewingVoice] = useState(false);
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingShotSetIds, setUploadingShotSetIds] = useState<string[]>([]);
@@ -175,7 +177,7 @@ export default function MixcutPanel({
       setTtsProviders(providersResult);
       const configuredTts = providersResult.find((provider) => provider.configured) ?? providersResult[0] ?? null;
       setTtsProviderId(configuredTts?.id ?? '');
-      setVoice(configuredTts?.voices[0]?.id ?? '');
+      setVoice(defaultTtsVoice(configuredTts));
       setVisionProviders(visionProviderList);
       const usableVision = visionProviderList.filter((provider) => provider.configured && provider.supportsVision);
       const savedVisionId = readSavedVisionProviderId();
@@ -228,7 +230,7 @@ export default function MixcutPanel({
           setTtsProviderId(selectedProvider?.id ?? '');
           setVoice(selectedProvider?.voices.some((item) => item.id === groupScript.narrationConfig.voice)
             ? groupScript.narrationConfig.voice
-            : selectedProvider?.voices[0]?.id ?? '');
+            : defaultTtsVoice(selectedProvider));
           setSpeed(groupScript.narrationConfig.speed);
         }
         const latestPrepare = latestGroup?.jobs.find((job) => job.kind === 'prepare');
@@ -647,7 +649,7 @@ export default function MixcutPanel({
   const changeTtsProvider = (providerId: string) => {
     const provider = ttsProviders.find((item) => item.id === providerId);
     setTtsProviderId(providerId);
-    setVoice((current) => provider?.voices.some((item) => item.id === current) ? current : provider?.voices[0]?.id ?? '');
+    setVoice((current) => provider?.voices.some((item) => item.id === current) ? current : defaultTtsVoice(provider));
     markPersistenceDirty();
   };
 
@@ -657,26 +659,15 @@ export default function MixcutPanel({
     markPersistenceDirty();
   };
 
-  const previewVoice = async () => {
-    if (!ttsProviderId || !voice) return;
-    setPreviewingVoice(true);
+  const previewVoice = async (item: TtsVoice) => {
+    if (!ttsProviderId) return;
+    setPreviewingVoice(item.id);
+    setMessage('');
     try {
-      const response = await fetch(`/api/providers/tts/${encodeURIComponent(ttsProviderId)}/preview`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ voice, speed }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.message || body.error || '音色试听失败');
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const audio = new Audio(url);
-      const release = () => URL.revokeObjectURL(url);
-      audio.addEventListener('ended', release, { once: true });
-      audio.addEventListener('error', release, { once: true });
-      await audio.play();
+      await playTtsVoicePreview(ttsProviderId, item, speed);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
-    } finally { setPreviewingVoice(false); }
+    } finally { setPreviewingVoice(null); }
   };
 
   const startCreation = async () => {
@@ -949,7 +940,7 @@ export default function MixcutPanel({
                     onProviderChange={changeTtsProvider}
                     onVoiceChange={(nextVoice) => { setVoice(nextVoice); markPersistenceDirty(); }}
                     onSpeedChange={(nextSpeed) => { setSpeed(nextSpeed); markPersistenceDirty(); }}
-                    onPreviewVoice={() => void previewVoice()}
+                    onPreviewVoice={(item) => void previewVoice(item)}
                     previewingVoice={previewingVoice}
                     visionProviders={visionProviders}
                     visionProviderId={visionProviderId}

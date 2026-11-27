@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { Tag } from '@/components/ui/Appearance';
+import { playTtsVoicePreview } from '@/components/media/play-tts-voice-preview';
 import SystemFontPicker from '@/components/ui/SystemFontPicker';
 import BatchProductionProgressCard, { type BatchProgressView } from './BatchProductionProgressCard';
 import type { BatchPreparationResult } from '@/lib/batch-production/prepare';
@@ -10,6 +11,7 @@ import type { BatchSnapshotDetail } from '@/lib/batch-production/batch-flow';
 import { defaultTextStyle, normalizeTextStyle } from '@/lib/media-core/cover-domain';
 // 纯字符串模块(无 sharp/fs 依赖),与渲染端封面合成共用同一份 SVG 构造。
 import { textStyleToSvgElements } from '@/lib/media-core/cover-title-svg';
+import { defaultTtsVoice, type TtsVoice } from '@/lib/media-core/tts-voice';
 import {
   OUTPUT_PRESETS,
   type CoverFraming,
@@ -26,7 +28,8 @@ export interface BatchTtsProviderView {
   name: string;
   model: string;
   configured: boolean;
-  voices: Array<{ id: string; label: string }>;
+  voices: TtsVoice[];
+  defaultVoice?: string;
 }
 
 export interface BatchBgmParamsDraft {
@@ -151,7 +154,7 @@ interface NarrationConfigDraft {
 
 function defaultConfigFor(provider: BatchTtsProviderView | undefined): NarrationConfigDraft | null {
   if (!provider || !provider.configured) return null;
-  return { providerId: provider.id, voice: provider.voices[0]?.id ?? '', speed: 1 };
+  return { providerId: provider.id, voice: defaultTtsVoice(provider), speed: 1 };
 }
 
 /**
@@ -222,6 +225,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
   const [voiceQuery, setVoiceQuery] = useState<Record<string, string>>({});
   const [showAllVoices, setShowAllVoices] = useState<Record<string, boolean>>({});
   const [previewing, setPreviewing] = useState<Record<string, string | null>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
   const [bgmListOpen, setBgmListOpen] = useState(false);
   const [auditioningTrackId, setAuditioningTrackId] = useState<string | null>(null);
   const auditionAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -493,27 +497,14 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     setScriptDialogOpen(true);
   }
 
-  async function auditionVoice(scriptId: string, providerId: string, voice: string, speed: number): Promise<void> {
+  async function auditionVoice(scriptId: string, providerId: string, voice: TtsVoice, speed: number): Promise<void> {
     if (previewing[scriptId]) return;
-    setPreviewing((current) => ({ ...current, [scriptId]: voice }));
+    setPreviewing((current) => ({ ...current, [scriptId]: voice.id }));
+    setPreviewErrors((current) => ({ ...current, [scriptId]: '' }));
     try {
-      const response = await fetch(`/api/providers/tts/${encodeURIComponent(providerId)}/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice, speed }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.message || body.error || '音色试听失败');
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const audio = new Audio(url);
-      const release = () => URL.revokeObjectURL(url);
-      audio.addEventListener('ended', release, { once: true });
-      audio.addEventListener('error', release, { once: true });
-      await audio.play();
+      await playTtsVoicePreview(providerId, voice, speed);
     } catch (error) {
-      console.warn('音色试听失败', error);
+      setPreviewErrors((current) => ({ ...current, [scriptId]: error instanceof Error ? error.message : '音色试听失败' }));
     } finally {
       setPreviewing((current) => ({ ...current, [scriptId]: null }));
     }
@@ -528,7 +519,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
     }
     const provider = ttsProviders.find((item) => item.id === config.providerId);
     const allVoices = provider?.voices ?? [];
-    const effectiveVoice = allVoices.some((item) => item.id === config.voice) ? config.voice : allVoices[0]?.id ?? '';
+    const effectiveVoice = allVoices.some((item) => item.id === config.voice) ? config.voice : defaultTtsVoice(provider);
     const query = (voiceQuery[scriptId] ?? '').trim().toLocaleLowerCase();
     const filtered = query
       ? allVoices.filter((item) => item.label.toLocaleLowerCase().includes(query) || item.id.toLocaleLowerCase().includes(query))
@@ -546,7 +537,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
               <select
                 aria-label={`${scriptId} 配音服务商`}
                 value={config.providerId}
-                onChange={(event) => updateConfig(scriptId, { providerId: event.target.value, voice: ttsProviders.find((item) => item.id === event.target.value)?.voices[0]?.id ?? '' })}
+                onChange={(event) => updateConfig(scriptId, { providerId: event.target.value, voice: defaultTtsVoice(ttsProviders.find((item) => item.id === event.target.value)) })}
                 className="h-9 min-w-44 rounded-xl border border-hairline bg-surface px-3 text-sm text-ink"
               >
                 {ttsProviders.filter((item) => item.configured || item.id === config.providerId).map((item) => (
@@ -590,7 +581,7 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 className={`relative cursor-pointer rounded-xl border p-2 text-center transition ${item.id === effectiveVoice ? 'border-accent bg-accent/5' : 'border-hairline bg-surface'}`}
                 onClick={() => updateConfig(scriptId, { voice: item.id })}
                 onKeyDown={(event) => {
-                  if ((event.key === 'Enter' || event.key === ' ') && !previewing[scriptId]) updateConfig(scriptId, { voice: item.id });
+                  if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ') && !previewing[scriptId]) updateConfig(scriptId, { voice: item.id });
                 }}
               >
                 <div className="mx-auto grid h-8 w-8 place-items-center rounded-full bg-surface-subtle text-ink-secondary"><Icon name="mic" size={15} /></div>
@@ -598,18 +589,19 @@ export default function BatchStepScripts(props: BatchStepScriptsProps) {
                 <button
                   type="button"
                   className={`mt-1 inline-flex items-center gap-1 text-[11px] ${item.id === effectiveVoice ? 'text-accent' : 'text-ink-tertiary'}`}
-                  disabled={Boolean(previewing[scriptId]) || !provider?.configured}
+                  disabled={Boolean(previewing[scriptId]) || (!item.previewUrl && !provider?.configured)}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void auditionVoice(scriptId, config.providerId, item.id, config.speed);
+                    void auditionVoice(scriptId, config.providerId, item, config.speed);
                   }}
                 >
                   <Icon name="play" size={9} />
-                  {previewing[scriptId] === item.id ? '生成中…' : '试听'}
+                  {previewing[scriptId] === item.id ? '加载中…' : '试听'}
                 </button>
               </div>
             ))}
           </div>
+          {previewErrors[scriptId] && <p className="mt-2 text-xs text-fail" role="alert">{previewErrors[scriptId]}</p>}
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <input
               type="text"

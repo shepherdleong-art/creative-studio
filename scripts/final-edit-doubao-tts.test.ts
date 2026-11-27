@@ -78,6 +78,16 @@ try {
   assert.equal(adapter.type, 'doubao-http-chunked');
   assert.equal(adapter.providesWordTimings, true);
   assert.equal(adapter.defaultVoice, 'zh_female_vv_uranus_bigtts');
+  const featuredVoices = adapter.voices.slice(0, 4);
+  assert.deepEqual(featuredVoices.map(({ label }) => label), [
+    '甜美悦悦 2.0', '清澈梓梓 2.0', '刘飞 2.0', '清朗温润 2.0',
+  ]);
+  for (const voice of featuredVoices) {
+    const url = voice.previewUrl;
+    assert.ok(url && url.startsWith('/voice-previews/'));
+    const fixture = path.join(process.cwd(), 'public', url);
+    assert.ok(fs.statSync(fixture).size > 0, `Missing bundled preview for ${voice.label}`);
+  }
   assert.equal(adapter.voices.find((voice) => voice.label === '大壹')?.id, 'zh_male_dayi_saturn_bigtts');
   assert.equal(adapter.validateBaseUrl('https://openspeech.bytedance.com/'), 'https://openspeech.bytedance.com');
   assert.equal(

@@ -76,7 +76,8 @@ async function __teamRouteGET(request: Request) {
       return {
         id: String(row.id), name: String(row.name), type: String(row.type), model: String(row.model),
         enabled: Number(row.enabled), isBuiltin: Number(row.isBuiltin), hasApiKey,
-        configured: Boolean(Number(row.enabled) && hasApiKey), voices: adapter.voices, description: adapter.description,
+        configured: Boolean(Number(row.enabled) && hasApiKey), voices: adapter.voices, defaultVoice: adapter.defaultVoice,
+        description: adapter.description,
       };
     }).filter((provider) => provider.configured);
     providers.sort((left, right) => left.id === 'doubao-seed-tts-2' ? -1 : right.id === 'doubao-seed-tts-2' ? 1 : left.name.localeCompare(right.name, 'zh-CN'));
