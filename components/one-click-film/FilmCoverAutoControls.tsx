@@ -11,6 +11,9 @@ const fallbackText: Record<FilmAutoCoverFallback, string> = {
   timeout: '视觉模型响应超时',
   media_unavailable: '候选画面暂不可用',
   request_failed: '视觉服务暂不可用',
+  model_forbidden: '当前账号没有视觉模型权限',
+  monthly_budget: '本月视觉模型额度不足',
+  policy_denied: '当前团队策略不允许本次挑帧',
 };
 
 export function FilmCoverAutoControls({ state, current, disabled, onRetry }: {

@@ -395,10 +395,11 @@ export function updatePackagingDraft(db: Database.Database, input: {
   if (typeof input.bgmId === 'string') options.bgmId = input.bgmId || undefined;
   const body = readFilmBody(db, input.run, input.entryCode);
   const previousCover = parseFilmCoverMedia(JSON.parse(row.optionsJson).coverMedia);
-  if ('coverMedia' in changes) {
-    if (!body && changes.coverMedia != null) throw new OneClickFilmError('invalid_input', '还没有生成原片');
+  if ('coverMedia' in changes || (options.cover && 'cover' in changes && previousCover)) {
+    const selection = 'coverMedia' in changes ? changes.coverMedia : previousCover;
+    if (!body && selection != null) throw new OneClickFilmError('invalid_input', '还没有生成原片');
     if (body) {
-      const selected = validateFilmCoverSelection(db, input.run, body, changes.coverMedia);
+      const selected = validateFilmCoverSelection(db, input.run, body, selection, options.cover ? undefined : previousCover);
       if (!selected || selected.kind === 'auto_frame') {
         const existing = previousCover?.kind === 'auto_frame' && previousCover.sourceSignature === body.signature ? previousCover : undefined;
         // Use the last saved automatic frame while an explicit re-selection is still pending.

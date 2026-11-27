@@ -14,6 +14,7 @@ import { buildPackagingVars, sanitizePointCues } from '@/lib/media-core/packagin
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '@/lib/media-core/render-contract';
 import { validatePackagingStickers } from '@/lib/media-core/packaging-stickers';
 import { isExecutionDeferredError, isExecutionUnknownError } from '@/lib/media-core/execution/waiting';
+import { filmQueuePolicyNotice } from '@/lib/one-click-film/queue-notice';
 import { assertOneClickFilmApiReady, jsonError, readJsonBody } from '@/lib/one-click-film/http';
 import { OneClickFilmError } from '@/lib/one-click-film/errors';
 import { retryFilmAutoCover, scheduleFilmAutoCover } from '@/lib/one-click-film/cover-auto';
@@ -55,7 +56,8 @@ async function __teamRouteGET(
       const saved = run && readFilmBody(db, run, coverCode);
       if (!run || !saved) throw new OneClickFilmError('not_found', '还没有生成原片', 404);
       const record = listPackaging(db, run).find(item => item.entryCode === coverCode);
-      const cover = await previewFilmCover(db, run, await playableFilmBody(saved), record?.options.coverMedia);
+      const cover = await previewFilmCover(db, run, await playableFilmBody(saved),
+        record?.options.cover ? record.options.coverMedia : undefined, request.nextUrl.searchParams.get('thumbnail') === '1');
       return new NextResponse(new Uint8Array(cover), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' } });
     }
     const autoCode = request.nextUrl.searchParams.get('autoCover');
@@ -150,7 +152,9 @@ async function __teamRoutePOST(
       try {
         await recognizeFilmPackagingSubtitles(db, run, entryCode, Number(body.revision), body.prepareIfMissing === true ? 'open' : 'explicit');
       } catch (error) {
-        if (isExecutionDeferredError(error)) return NextResponse.json({ subtitleWaiting: true }, { status: 202 });
+        if (isExecutionDeferredError(error)) return NextResponse.json({
+          subtitleWaiting: true, subtitleWarning: filmQueuePolicyNotice(db, (error as { operationId?: string }).operationId),
+        }, { status: 202 });
         if (isExecutionUnknownError(error)) throw new OneClickFilmError('conflict', '口播识别已提交，正在等待结果核对。', 409);
         throw error;
       }
@@ -167,7 +171,7 @@ async function __teamRoutePOST(
       const durationSec = film.frames / FINAL_EDIT_FPS;
       if (action === 'preview') {
         const options = parsePackagingOptions(body.options);
-        if (body.options && typeof body.options === 'object' && 'coverMedia' in body.options) {
+        if (options.cover && body.options && typeof body.options === 'object' && 'coverMedia' in body.options) {
           options.coverMedia = validateFilmCoverSelection(db, run, film, body.options.coverMedia);
         }
         if (body.options && typeof body.options === 'object' && 'assetStickers' in body.options) {
@@ -176,13 +180,13 @@ async function __teamRoutePOST(
         }
         const title = typeof body.title === 'string' ? body.title.slice(0, 60) : '';
         const config = packagingOverlayConfig({ options, template: options.template, title, pointCues: sanitizePointCues(body.pointCues) ?? [] });
-        const jpeg = await previewFilmCover(db, run, film, options.coverMedia);
-        const coverImage = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+        if (!options.cover && !config.enabled) return NextResponse.json({ html: '', coverImage: '' });
+        const jpeg = await previewFilmCover(db, run, film, options.cover ? options.coverMedia : undefined);
+        const coverImage = options.cover ? `data:image/jpeg;base64,${jpeg.toString('base64')}` : '';
         if (!config.enabled) return NextResponse.json({ html: '', coverImage });
         const coverSec = options.cover ? FINAL_EDIT_INTRO_FRAMES / FINAL_EDIT_FPS : 0;
         const hueMode = resolveTemplateHueMode(resolvePackagingTemplateDir(resolvePackagingDir(), config.template));
-        const paletteSource = !options.cover && options.coverMedia ? await previewFilmCover(db, run, film) : jpeg;
-        const palette = await extractPackagingPalette(paletteSource, hueMode);
+        const palette = await extractPackagingPalette(jpeg, hueMode);
         const html = packagingPreviewHtml({
           config, vars: buildPackagingVars({ subtitleCues: [], overrides: config.varsOverrides }),
           totalSec: durationSec + coverSec, coverSec, palette, edit: true, staticCover: true, coverEnabled: options.cover,
@@ -203,7 +207,7 @@ async function __teamRoutePOST(
         } catch (error) {
           if (error instanceof OneClickFilmError && error.code === 'conflict') throw error;
           subtitleWaiting = isExecutionDeferredError(error);
-          subtitleWarning = subtitleWaiting ? '口播识别正在等待名额，空出后自动对时。'
+          subtitleWarning = subtitleWaiting ? filmQueuePolicyNotice(db, (error as { operationId?: string }).operationId) ?? '口播识别正在等待名额，空出后自动对时。'
             : isExecutionUnknownError(error) ? '口播识别已提交，正在等待结果核对。'
               : '口播对时未完成。可在字幕面板校对草稿或重新识别。';
         }

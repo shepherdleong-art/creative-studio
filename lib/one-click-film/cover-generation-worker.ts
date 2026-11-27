@@ -22,6 +22,7 @@ import type { CoverReference, FilmCoverAsset } from './cover-assets.ts';
 import { FILM_COVER_GENERATION_MODULE, filmCoverGenerationConfig, filmCoverProviderFingerprint, filmCoverReferenceHash, findFilmCoverProvider } from './cover-generation.ts';
 import { resolveProjectCoverImagePath } from './cover-source.ts';
 import { tryFilmRequestLock } from './request-lock.ts';
+import { filmQueuePolicyNotice } from './queue-notice.ts';
 import { getOneClickFilmReadiness } from './runtime-readiness.ts';
 
 type CoverProvider = NonNullable<ReturnType<typeof findFilmCoverProvider>>;
@@ -44,10 +45,11 @@ const messages: Record<string, string> = {
   pool_disabled: '公司图像通道的共享资源池已停用，请联系管理员。',
   policy: '全景封面生成被供应商内容策略拦截，请调整构图偏好或参考图。',
   rejected: '供应商拒绝了全景封面生成请求。',
+  reference_download_timeout: '供应商下载参考图超时，本次未生成封面。',
   remote_failed: '供应商未能生成全景封面，请检查参考图或稍后再试。',
   submission_unknown: '提交结果待核对，请勿重复提交。',
   polling: '全景封面已提交，正在确认供应商结果。',
-  poll_timeout: '等待全景封面结果超时，供应商结果和费用仍待核对。可重新生成。',
+  poll_timeout: '供应商尚未确认结果，后台将继续核对原任务。',
   delivery: '全景封面已生成，但暂时无法保存图片。',
   reference: '参考图已变更或无法通过 COS 交付，未提交生成。',
   unavailable: '所选 GPT Image 2.6 通道当前不可用。',
@@ -55,9 +57,9 @@ const messages: Record<string, string> = {
   internal: '全景封面暂时无法生成。',
 };
 
-function updateAsset(db: Database.Database, id: string, status: FilmCoverAsset['status'], reason: string, delay?: number) {
+function updateAsset(db: Database.Database, id: string, status: FilmCoverAsset['status'], reason: string, delay?: number, message?: string) {
   db.prepare(`UPDATE one_click_film_cover_assets SET status=?, errorCode=?, message=?, nextAttemptAt=?, updatedAt=? WHERE id=?`)
-    .run(status, status === 'failed' || reason === 'submission_unknown' ? reason : null, messages[reason] ?? messages.internal,
+    .run(status, status === 'failed' || reason === 'submission_unknown' ? reason : null, message ?? messages[reason] ?? messages.internal,
       delay === undefined ? null : new Date(Date.now() + delay).toISOString(), new Date().toISOString(), id);
 }
 
@@ -91,7 +93,7 @@ async function deliverReferences(db: Database.Database, asset: FilmCoverAsset, s
     if (!mimeType) throw new Error('reference_format');
     const signedUrl = await tryUploadBufferToCosAndSign(bytes, mimeType, { signal });
     if (!signedUrl?.startsWith('https://')) throw new Error('cos_unavailable');
-    urls.push(asset.model.endsWith('-sunburst') ? await preferReadableCosOrigin(signedUrl, signal) : signedUrl);
+    urls.push(await preferReadableCosOrigin(signedUrl, signal));
   }
   return urls;
 }
@@ -184,9 +186,7 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
   const provider = findFilmCoverProvider(db, asset.providerId, sent);
   if (!provider || filmCoverProviderFingerprint(provider) !== asset.providerFingerprint) {
     if (sent) {
-      const remaining = remainingPollTime(asset, attempt);
-      return remaining ? updateAsset(db, asset.id, 'running', 'provider_changed', Math.min(remaining, REVIEW_INTERVAL))
-        : updateAsset(db, asset.id, 'failed', 'poll_timeout');
+      return updateAsset(db, asset.id, 'running', 'provider_changed', REVIEW_INTERVAL);
     }
     if (operation) failOperation(db, operation.id, 'unavailable');
     return updateAsset(db, asset.id, 'failed', 'unavailable');
@@ -210,7 +210,7 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
       failOperation(db, operation.id, reason);
       return updateAsset(db, asset.id, 'failed', reason);
     }
-    return updateAsset(db, asset.id, 'queued', 'waiting', POLL_INTERVAL);
+    return updateAsset(db, asset.id, 'queued', 'waiting', POLL_INTERVAL, filmQueuePolicyNotice(db, operation.id));
   }
   const requestSnapshot = { providerId: asset.providerId, model: asset.model, prompt: asset.prompt, size: asset.requestedSize,
     references: JSON.parse(asset.referenceImagesJson) as CoverReference[] };
@@ -249,7 +249,7 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
   const send = async (): Promise<ExecutionReceipt> => {
     try {
       const result = await submitCosGatewayImage({ model: asset.model, size: asset.requestedSize, prompt: asset.prompt, imageUrls }, provider.apiKey, provider.baseUrl, signal);
-      const remoteId = result.taskId && /^[\w.:-]{1,512}$/.test(result.taskId) ? result.taskId : undefined;
+      const remoteId = result.taskId || undefined;
       if (result.immediateImageUrl) {
         try { await saveImage(asset, result.immediateImageUrl, provider, signal); }
         catch { /* The provider generated a billable image even when local delivery failed. */ }
@@ -294,7 +294,7 @@ async function pollCover(db: Database.Database, asset: FilmCoverAsset, provider:
   attempt: AttemptRecord | undefined, snapshot: CoreUsageSnapshotV1, cost: Money, signal: AbortSignal, facade?: ExecutionFacade) {
   const waitForResult = (reason: 'polling' | 'generating' | 'delivery', interval: number) => {
     const remaining = remainingPollTime(asset, attempt);
-    if (!remaining) return updateAsset(db, asset.id, 'failed', reason === 'delivery' ? 'delivery' : 'poll_timeout');
+    if (!remaining) return updateAsset(db, asset.id, 'running', reason === 'delivery' ? 'delivery' : 'poll_timeout', REVIEW_INTERVAL);
     return updateAsset(db, asset.id, 'running', reason, Math.min(interval, remaining));
   };
   let imageUrl: string | undefined;
@@ -305,15 +305,15 @@ async function pollCover(db: Database.Database, asset: FilmCoverAsset, provider:
   }
   if (remoteId && !hasImage) {
     const waitingReason = attempt?.terminalState === 'succeeded' ? 'delivery' : 'polling';
-    const remaining = remainingPollTime(asset, attempt);
-    if (!remaining || !/^[\w.:-]{1,512}$/.test(remoteId)) return waitForResult(waitingReason, REVIEW_INTERVAL);
-    const result = await readGatewayTaskImage(remoteId, provider.apiKey, provider.baseUrl,
-      AbortSignal.any([signal, AbortSignal.timeout(remaining)])).catch(() => null);
+    const result = await readGatewayTaskImage(remoteId, provider.apiKey, provider.baseUrl, signal).catch(() => null);
     signal.throwIfAborted();
     if (!result) return waitForResult(waitingReason, REVIEW_INTERVAL);
     if (result.status === 'failed' || result.httpStatus === 451) {
       if (attempt?.terminalState === 'succeeded') return waitForResult('delivery', REVIEW_INTERVAL);
-      const reason = result.httpStatus === 451 || /\b451\b|content[ _-]?(?:policy|filter)|safety/i.test(result.errorMessage ?? '') ? 'policy' : 'remote_failed';
+      const diagnostic = result.errorMessage ?? '';
+      let reason = 'remote_failed';
+      if (result.httpStatus === 451 || /\b451\b|content[ _-]?(?:policy|filter)|safety/i.test(diagnostic)) reason = 'policy';
+      else if (/unable to download content from the provided URL before the timeout/i.test(diagnostic)) reason = 'reference_download_timeout';
       if (attempt) await facade?.settle({ attemptId: attempt.id,
         outcome: 'failed', remoteTerminal: true, errorCode: reason, errorStage: 'remote_poll' });
       return updateAsset(db, asset.id, 'failed', reason);
@@ -379,7 +379,7 @@ function startFilmCoverWorker(db: Database.Database): void {
       if (current.remoteId || attempt?.remoteId) {
         const remaining = remainingPollTime(current, attempt);
         if (remaining) updateAsset(db, id, 'running', 'polling', Math.min(remaining, REVIEW_INTERVAL));
-        else updateAsset(db, id, 'failed', 'poll_timeout');
+        else updateAsset(db, id, 'running', 'poll_timeout', REVIEW_INTERVAL);
       } else if (attempt?.submissionState === 'maybe_sent' || attempt?.submissionState === 'accepted') {
         const remaining = remainingPollTime(current, attempt);
         if (remaining) updateAsset(db, id, 'running', 'submission_unknown', Math.min(remaining, REVIEW_INTERVAL));
@@ -425,8 +425,9 @@ function startFilmCoverWorker(db: Database.Database): void {
     if (signal.aborted || capacity() <= 0 || !db.open) return;
     const assets = due.all(new Date().toISOString()) as Array<{ id: string }>;
     const runtime = getExecutionModuleRuntime();
-    if (runtime) {
-      while (capacity() > 0) {
+    if (runtime && assets.length) {
+      const waiting = db.prepare("SELECT 1 FROM execution_operations WHERE module=? AND status IN ('pending','deferred') LIMIT 1");
+      while (capacity() > 0 && waiting.get(FILM_COVER_GENERATION_MODULE)) {
         const admission = runtime.facade.admit({ instanceId: runtime.instanceId, fence: runtime.fence, module: FILM_COVER_GENERATION_MODULE });
         if (admission.kind !== 'admitted') break;
         void executeExecutionContinuation(admission.grant, runtime.facade).catch(() => {

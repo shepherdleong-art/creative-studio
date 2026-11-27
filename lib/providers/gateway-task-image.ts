@@ -422,7 +422,8 @@ export async function pollGatewayTaskImage(
 /** Single status read for background workers that persist their next poll time. */
 export async function readGatewayTaskImage(taskId: string, apiKey: string, baseUrl: string, signal?: AbortSignal): Promise<GatewayTaskPollResult> {
   const cleanBase = baseUrl.replace(/\/$/, '');
-  const pollUrl = `${cleanBase}/v1/videos/${taskId}`;
+  if (!taskId || taskId === '.' || taskId === '..') throw new Error('网关图片任务标识无效');
+  const pollUrl = `${cleanBase}/v1/videos/${encodeURIComponent(taskId)}`;
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const timeout = withTimeoutSignal(signal, POLL_REQUEST_TIMEOUT_MS);
@@ -453,7 +454,7 @@ export async function readGatewayTaskImage(taskId: string, apiKey: string, baseU
       // model_id，LiteLLM 代理凭它会路由到错误的默认上游。
       return {
         status: 'succeeded',
-        imageUrl: imageUrl ?? `${cleanBase}/v1/videos/${taskId}/content`,
+        imageUrl: imageUrl ?? `${pollUrl}/content`,
         rawResponse: data,
       };
     }

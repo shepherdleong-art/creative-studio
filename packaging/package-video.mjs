@@ -1,6 +1,6 @@
 // 端到端视频包装管线（创意工作台 0.5.2 · Phase 1）
 // 用法（应用根目录）：
-//   node-runtime\node.exe packaging\package-video.mjs <rough_cut.mp4> [vars.json] [输出.mp4] [模板目录]
+//   node-runtime\node.exe packaging\package-video.mjs <rough_cut.mp4> [vars.json] [输出.mp4] [模板目录] [封面取色图]
 // 示例：
 //   node-runtime\node.exe packaging\package-video.mjs storage\final-edits\jobs\<id>\final.mp4
 //
@@ -152,8 +152,8 @@ let userFontFace = "";
 // 色相范围由模板 palette.json 声明：{"hue":"any"} 不限（A 卡片风，暖色平局优先）；缺省 warm 暖色限定（B/C/D 手账风统一）
 let paletteScript = "";
 try {
-  const coverJpg = path.join(workDir, "_cover.jpg");
-  run(FFMPEG, ["-y", "-v", "error", "-ss", "0", "-i", roughAbs, "-frames:v", "1", coverJpg]);
+  const coverJpg = process.argv[6] ? path.resolve(process.argv[6]) : path.join(workDir, "_cover.jpg");
+  if (!process.argv[6]) run(FFMPEG, ["-y", "-v", "error", "-ss", "0", "-i", roughAbs, "-frames:v", "1", coverJpg]);
   const sharp = dependencyRequire('sharp');
   const { data } = await sharp(coverJpg).resize(96, 96, { fit: "fill" }).raw().toBuffer({ resolveWithObject: true });
   const buckets = new Map(); // key -> { n, r, g, b }

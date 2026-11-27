@@ -516,6 +516,19 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
       CREATE INDEX idx_ocf_cover_assets_work ON one_click_film_cover_assets(nextAttemptAt) WHERE status IN ('queued', 'running');
     `,
   },
+  {
+    version: 16,
+    sql: `
+      ALTER TABLE one_click_film_auto_covers ADD COLUMN cutsSignature TEXT;
+      UPDATE one_click_film_cover_assets SET status='running', nextAttemptAt=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        message='后台正在核对原任务。'
+      WHERE status='failed' AND errorCode='poll_timeout' AND (remoteId IS NOT NULL OR operationId IS NOT NULL);
+      UPDATE one_click_film_packaging SET status='pending', relativePath='', revision=revision+1
+      WHERE status='ready' AND CASE WHEN json_valid(optionsJson) THEN
+        json_type(optionsJson,'$.cover') IS NOT 'false' OR json_type(optionsJson,'$.decoration') IS NOT 'false'
+        OR json_array_length(optionsJson,'$.assetStickers')>0 ELSE 1 END;
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =

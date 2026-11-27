@@ -11,6 +11,7 @@ import { assertNoStorageSymlink } from '../media-core/storage-path.ts';
 import { OneClickFilmError } from './errors.ts';
 import { videoJobFileUrl } from './generation.ts';
 import { candidateFits } from './rework.ts';
+import { readReviewScene } from './review.ts';
 import type { OneClickFilmRun } from './store.ts';
 
 export function filmStoragePath(value: string): string {
@@ -36,19 +37,21 @@ export interface FilmBody {
   snapshot: { analysisId?: string; productName?: string; soundMode?: 'native' | 'tts' | 'none'; narration?: string; narrationPath?: string; scriptRevision?: number; promptText?: string };
   edits: Array<{ id: string; videoJobId: string; file: string; start: number; end: number; trim: number; whole: boolean }>;
   signature: string;
+  coverCutsSignature?: string;
   approved: boolean;
   hdApproved: boolean;
 }
 
 export function readFilmBody(db: Database.Database, run: OneClickFilmRun, entryCode: string): FilmBody | null {
   const row = db.prepare(`
-    SELECT r.id, r.entryId, r.durationUs, r.approvedAt, r.hdApprovedSignature, v.videoJobId, v.scriptSnapshotJson,
+    SELECT r.id, r.entryId, r.durationUs, r.approvedAt, r.hdApprovedSignature, r.shotsJson, r.detection, r.detectionError, v.videoJobId, v.scriptSnapshotJson,
       j.localVideoPath, j.filmGenerationStage FROM one_click_film_reviews r
     JOIN one_click_film_video_jobs v ON v.id=r.videoJobId JOIN video_jobs j ON j.id=v.videoJobId
     JOIN one_click_film_entries e ON e.id=r.entryId
     WHERE r.runId=? AND r.entryCode=? AND r.supersededAt IS NULL AND e.retired=0 AND j.status='succeeded'
   `).get(run.id, entryCode) as {
     id: string; entryId: string; durationUs: number; approvedAt: string | null; hdApprovedSignature: string | null;
+    shotsJson: string; detection: string; detectionError: string | null;
     videoJobId: string; scriptSnapshotJson: string; localVideoPath: string; filmGenerationStage: string | null;
   } | undefined;
   if (!row?.localVideoPath) return null;
@@ -65,10 +68,12 @@ export function readFilmBody(db: Database.Database, run: OneClickFilmRun, entryC
   }));
   const snapshot = JSON.parse(row.scriptSnapshotJson) as FilmBody['snapshot'];
   const signature = createHash('sha256').update(JSON.stringify([row.videoJobId, row.durationUs, edits])).digest('hex');
+  const cuts = readReviewScene(db, row).shots.map(({ id, startUs, endUs }) => [id, startUs, endUs]);
+  const coverCutsSignature = createHash('sha256').update(JSON.stringify(cuts)).digest('hex');
   return {
     entryId: row.entryId, entryCode, jobId: row.id, originalVideoJobId: row.videoJobId,
     originalPath: filmStoragePath(row.localVideoPath), frames: bodyFrame(row.durationUs), reviewDurationUs: row.durationUs,
-    approved: Boolean(row.approvedAt), snapshot, edits, signature,
+    approved: Boolean(row.approvedAt), snapshot, edits, signature, coverCutsSignature,
     draft: row.filmGenerationStage === 'draft', hdApproved: row.hdApprovedSignature === signature,
   };
 }

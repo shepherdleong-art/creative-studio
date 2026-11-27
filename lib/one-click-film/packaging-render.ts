@@ -28,6 +28,7 @@ import { resolveFilmCoverImagePath } from './cover-source.ts';
 import type { OneClickFilmRun } from './store.ts';
 
 const pending = new Map<string, Promise<void>>();
+const CAPTION_RENDERER = 'single-line-v2';
 
 export async function listFilmBgm(db: Database.Database) {
   return (await scanBgmTracks(db, path.join(dataRoot(), 'storage'))).map((track) => ({
@@ -270,7 +271,10 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     const stickers = record.options.stickers?.length
       ? await writeStickerFile(work, record.options.stickers, offset, body.frames / FINAL_EDIT_FPS) : '';
     const coverPath = path.join(work, 'cover.jpg');
-    if (introFrames) await writeFilmCover({ bodyPath: bodyFile, cover, imagePath, jpgPath: coverPath });
+    if (introFrames || overlay.enabled) {
+      await writeFilmCover({ bodyPath: bodyFile, cover: introFrames ? cover : resolveFilmCoverMedia(undefined, body),
+        imagePath, jpgPath: coverPath });
+    }
     const intro = introFrames
       ? `[1:v]trim=end_frame=${introFrames},format=yuv420p,setsar=1,setpts=PTS-STARTPTS[intro];[intro][0:v]concat=n=2:v=1:a=0[base];`
       : '';
@@ -291,7 +295,7 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
     if (overlay.enabled) {
       await resolveRenderFonts(overlay);
       await renderVideoPackaging({
-        videoPath, coverPath, totalSec, staticCover: true, coverEnabled: record.options.cover,
+        videoPath, coverPath, paletteImagePath: coverPath, totalSec, staticCover: true, coverEnabled: record.options.cover,
         config: overlay,
       });
     }
@@ -310,11 +314,11 @@ async function renderPackagingRevision(db: Database.Database, run: OneClickFilmR
       }
       const updated = db.prepare(`
         UPDATE one_click_film_packaging SET status='ready', relativePath=?, sourceSignature=?, audioSignature=?, subtitleCuesJson=?,
-          title=?, pointCuesJson=?, optionsJson=json_set(optionsJson, '$.captionRenderer', 'single-line', '$.renderedCoverMedia', json(?)),
+          title=?, pointCuesJson=?, optionsJson=json_set(optionsJson, '$.captionRenderer', ?, '$.renderedCoverMedia', json(?)),
           errorMessage=NULL, updatedAt=datetime('now') WHERE id=? AND revision=?
       `).run(relative, body.signature, useSubtitles && refreshSubtitles ? audioSignature : previousAudioSignature,
         JSON.stringify(useSubtitles ? subtitle : record.subtitleCues), record.title, JSON.stringify(record.pointCues),
-        JSON.stringify(cover), record.id, record.revision);
+        CAPTION_RENDERER, JSON.stringify(cover), record.id, record.revision);
       if (!updated.changes) throw new Error('已保存了更新的包装版本。');
       registerManagedFile({ absolutePath: finalName, mimeType: 'video/mp4',
         references: [{ resourceType: 'project', resourceId: run.projectId, role: 'derivative' }] });
@@ -338,7 +342,7 @@ export async function renderFilmPackaging(db: Database.Database, run: OneClickFi
   if (record.ready) {
     const renderer = db.prepare("SELECT json_extract(optionsJson,'$.captionRenderer') FROM one_click_film_packaging WHERE id=?")
       .pluck().get(record.id);
-    if (!record.options.subtitles || renderer === 'single-line') {
+    if (!record.options.subtitles || renderer === CAPTION_RENDERER) {
       const cover = record.options.coverMedia;
       if (record.options.cover && cover && 'assetId' in cover) {
         const body = readFilmBody(db, run, code);

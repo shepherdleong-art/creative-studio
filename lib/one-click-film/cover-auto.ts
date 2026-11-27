@@ -141,7 +141,8 @@ async function publishCover(db: Database.Database, run: OneClickFilmRun, body: F
   try {
     if (signal.aborted || !db.open) return;
     db.transaction(() => {
-      if (readFilmBody(db, run, body.entryCode)?.signature === body.signature) reconcileFilmCoverChoice(db, body);
+      const current = readFilmBody(db, run, body.entryCode);
+      if (current?.signature === body.signature && current.coverCutsSignature === body.coverCutsSignature) reconcileFilmCoverChoice(db, body);
     }).immediate();
   } finally { lease.release(); }
 }
@@ -154,9 +155,29 @@ export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilm
   if (!lease) return;
   const identity = [saved.entryId, saved.signature] as const;
   try {
-    if (signal.aborted || !db.open || readFilmBody(db, run, saved.entryCode)?.signature !== saved.signature) return;
-    db.prepare(`INSERT OR IGNORE INTO one_click_film_auto_covers(entryId, sourceSignature, state, principalTaskId)
-      VALUES (?, ?, 'queued', ?)`).run(...identity, saved.originalVideoJobId);
+    if (signal.aborted || !db.open) return;
+    const current = readFilmBody(db, run, saved.entryCode);
+    if (current?.signature !== saved.signature || current.coverCutsSignature !== saved.coverCutsSignature) return;
+    const cuts = current.coverCutsSignature ?? '';
+    db.transaction(() => {
+      // Adopt pre-upgrade results without charging again. Subsequent cut changes get a fresh attempt.
+      db.prepare(`UPDATE one_click_film_auto_covers SET cutsSignature=?
+        WHERE entryId=? AND sourceSignature=? AND cutsSignature IS NULL`).run(cuts, ...identity);
+      const superseded = db.prepare(`SELECT attempt FROM one_click_film_auto_covers
+        WHERE entryId=? AND sourceSignature=? AND cutsSignature<>? AND state IN ('waiting','started')`)
+        .pluck().get(...identity, cuts);
+      if (superseded && requireAccessContext().kind !== 'local') {
+        db.prepare(`UPDATE execution_operations SET status='failed', updatedAt=?
+          WHERE module='llm' AND taskId=? AND step='select-cover-frame' AND inputRevision=?
+            AND status IN ('pending','deferred') AND currentPermitId IS NULL`)
+          .run(new Date().toISOString(), `one-click-film-cover-${saved.entryId}`, `${saved.signature}:a${superseded}`);
+      }
+      db.prepare(`INSERT INTO one_click_film_auto_covers(entryId, sourceSignature, state, principalTaskId, cutsSignature)
+        VALUES (?, ?, 'queued', ?, ?) ON CONFLICT(entryId,sourceSignature) DO UPDATE SET
+        state='queued', attempt=attempt+1, requestJson=NULL, frame=NULL, shotId=NULL, reason=NULL,
+        principalModule='video', principalTaskId=excluded.principalTaskId, cutsSignature=excluded.cutsSignature
+        WHERE cutsSignature<>excluded.cutsSignature`).run(...identity, saved.originalVideoJobId, cuts);
+    }).immediate();
     const row = readFilmAutoCoverRow(db, saved)!;
     const body = await playableFilmBody(saved, signal).catch(() => saved);
     await publishCover(db, run, body, signal);
@@ -183,7 +204,8 @@ export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilm
             ? JSON.parse(row.requestJson) as CoverVisionRequest : await prepareVisionRequest(db, run, body, row.attempt, signal);
           if (signal.aborted || !db.open) return;
           if (!('request' in prepared)) { settle(prepared); return; }
-          if (readFilmBody(db, run, body.entryCode)?.signature !== body.signature) return;
+          const latestBody = readFilmBody(db, run, body.entryCode);
+          if (latestBody?.signature !== body.signature || latestBody.coverCutsSignature !== cuts) return;
           db.prepare(`UPDATE one_click_film_auto_covers SET state='started', requestJson=?
             WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(JSON.stringify(prepared), ...identity, row.attempt);
           const { completeJson } = await import('../script-providers/index.ts');
@@ -194,8 +216,22 @@ export async function syncFilmAutoCover(db: Database.Database, run: OneClickFilm
     } catch (error) {
       if (signal.aborted || !db.open) return;
       if (isExecutionDeferredError(error)) {
-        db.prepare(`UPDATE one_click_film_auto_covers SET state='waiting'
-          WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(...identity, row.attempt);
+        db.transaction(() => {
+          // Admission may just have updated the reason. Close only this unsent
+          // request, using the current ledger state under the same write lock.
+          const { operationId } = error as { operationId: string };
+          const denied = db.prepare(`UPDATE execution_operations SET status='failed', updatedAt=?
+            WHERE id=? AND module='llm' AND status='deferred' AND currentPermitId IS NULL
+              AND waitReason IN ('model_forbidden','monthly_budget','actor_disabled','scope_forbidden',
+                'actor_paused','cost_unknown','pricing_required','pool_missing','pool_disabled','currency_mismatch')
+            RETURNING waitReason`).pluck().get(new Date().toISOString(), operationId);
+          if (denied) {
+            settle({ reason: denied === 'model_forbidden' || denied === 'monthly_budget' ? denied : 'policy_denied' });
+          } else {
+            db.prepare(`UPDATE one_click_film_auto_covers SET state='waiting'
+              WHERE entryId=? AND sourceSignature=? AND attempt=?`).run(...identity, row.attempt);
+          }
+        }).immediate();
       } else {
         settle(coverVisionFailure(error));
       }

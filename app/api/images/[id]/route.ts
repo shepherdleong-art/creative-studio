@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import {
-  IMAGE_REFERENCE_COUNTS_SQL,
+  readImageReferenceCounts,
   getImageDeleteBlockMessage,
-  type ImageReferenceCounts,
 } from '@/lib/image-delete-policy';
 import fs from 'fs';
 import { withTeamRoute } from '@/lib/team-service/route-wrapper';
@@ -38,7 +37,7 @@ async function __teamRouteDELETE(
     // not a FK column, so we CHECK it explicitly with LIKE to avoid
     // deleting images that are still used as references.
     const deleteResult = db.transaction(() => {
-      const refs = db.prepare(IMAGE_REFERENCE_COUNTS_SQL).get({ id }) as ImageReferenceCounts;
+      const refs = readImageReferenceCounts(db, id);
 
       const blockMessage = getImageDeleteBlockMessage(refs);
       if (blockMessage) {

@@ -6,7 +6,7 @@ import type { FilmBody } from './composition.ts';
 type AutoCover = Extract<FilmCoverMedia, { kind: 'auto_frame' }>;
 
 export type FilmAutoCoverFallback = 'no_provider' | 'no_panorama' | 'invalid_result' | 'content_filtered'
-  | 'timeout' | 'media_unavailable' | 'request_failed';
+  | 'timeout' | 'media_unavailable' | 'request_failed' | 'model_forbidden' | 'monthly_budget' | 'policy_denied';
 
 export type FilmAutoCoverState = {
   sourceSignature: string;
@@ -34,7 +34,8 @@ export function readFilmAutoCoverRow(db: Database.Database, body: FilmBody): Fil
 
 export function readFilmAutoCover(db: Database.Database, body: FilmBody): FilmAutoCoverState {
   const row = db.prepare(`SELECT attempt, state, frame, shotId, reason FROM one_click_film_auto_covers
-    WHERE entryId=? AND sourceSignature=?`).get(body.entryId, body.signature) as
+    WHERE entryId=? AND sourceSignature=? AND (cutsSignature IS NULL OR cutsSignature=?)`)
+    .get(body.entryId, body.signature, body.coverCutsSignature ?? '') as
       Pick<FilmAutoCoverRow, 'attempt' | 'state' | 'frame' | 'shotId' | 'reason'> | undefined;
   const base = { sourceSignature: body.signature, attempt: row?.attempt ?? 1 };
   if (row?.state === 'ready' && row.frame !== null) {

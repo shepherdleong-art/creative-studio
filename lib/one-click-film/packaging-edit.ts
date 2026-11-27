@@ -4,7 +4,7 @@ import type { TextStyle } from '../media-core/cover-types.ts';
 import type { FinalEditPackagingConfig } from '../media-core/packaging-vars.ts';
 import { createManualPackagingSticker, MAX_STICKER_INSTANCES, STICKER_MIN_DURATION_FRAMES, type PackagingStickerInstance } from '../media-core/packaging-stickers.ts';
 import { FINAL_EDIT_FPS, FINAL_EDIT_INTRO_FRAMES } from '../media-core/render-contract.ts';
-import { splitNarrationForDisplay } from '../subtitle-display.ts';
+import { normalizeAutomaticSubtitleText, splitNarrationForDisplay } from '../subtitle-display.ts';
 import type { PackagingRecord, TextCue } from './packaging.ts';
 
 export type Position = { x: number; y: number };
@@ -17,7 +17,7 @@ export function resolveFilmSubtitleStyle(value?: unknown, legacyPosition?: Posit
 
 export function filmCaptionSvg(style: TextStyle, text: string, width: number, height: number) {
   const design = { width: 1080, height: 1080 * height / width };
-  const elements = textStyleToSvgElements(style, text.replace(/\s*[\r\n]+\s*/gu, ' '), design);
+  const elements = textStyleToSvgElements(style, normalizeAutomaticSubtitleText(text), design);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 1080 ${design.height}">${elements}</svg>`;
 }
 
@@ -45,9 +45,12 @@ export function splitSubtitleCues(cues: readonly TextCue[]): TextCue[] {
 
 /** When word timing is available, split at its actual boundaries. */
 export function splitTimedSubtitle(cue: TextCue, timestamps?: Array<{ at: number; sec: number }>): TextCue[] {
-  if (Array.from(cue.text).length <= 16 && !/[，、；。！？]/u.test(cue.text.slice(0, -1))) return [cue];
-  const parts = splitNarrationForDisplay(cue.text, { maxContentCharacters: 16 });
-  if (parts.length < 2) return [cue];
+  const needsSplit = Array.from(cue.text).length > 16 || /[，、；。！？]/u.test(cue.text.slice(0, -1));
+  const parts = needsSplit ? splitNarrationForDisplay(cue.text, { maxContentCharacters: 16 }) : [];
+  if (parts.length < 2) {
+    const text = normalizeAutomaticSubtitleText(cue.text);
+    return text ? [{ ...cue, text }] : [];
+  }
   const total = parts.reduce((n, part) => n + Array.from(part.sourceText).length, 0);
   let consumed = 0;
   let cursor = cue.startSec;

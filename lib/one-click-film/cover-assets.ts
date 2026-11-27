@@ -44,6 +44,7 @@ export function filmCoverCandidate(asset: FilmCoverAsset): FilmCoverCandidate {
   const result: FilmCoverCandidate = {
     id: asset.id, entryCode: asset.entryCode, status: asset.status,
     channel: asset.model.endsWith('-flare') ? 'Flare' : 'Sunburst', message: asset.message, createdAt: asset.createdAt,
+    ...(asset.errorCode === 'submission_unknown' ? { submissionUnconfirmed: true } : {}),
   };
   if (asset.status === 'ready') {
     result.imageUrl = `/api/one-click-film/${encodeURIComponent(asset.projectId)}/cover-assets/${encodeURIComponent(asset.id)}?entryCode=${encodeURIComponent(asset.entryCode)}`;

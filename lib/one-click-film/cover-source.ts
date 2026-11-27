@@ -46,10 +46,13 @@ export function resolveFilmCoverImagePath(
   throw unavailableFilmCoverImage();
 }
 
-export function validateFilmCoverSelection(db: Database.Database, run: OneClickFilmRun, body: FilmBody, value: unknown) {
+export function validateFilmCoverSelection(db: Database.Database, run: OneClickFilmRun, body: FilmBody, value: unknown,
+  inactiveSavedCover?: FilmCoverMedia) {
   if (value == null) return undefined;
   const cover = parseFilmCoverMedia(value);
   if (!cover) throw new OneClickFilmError('invalid_input', '封面底图配置无效');
-  if ('assetId' in cover) resolveFilmCoverImagePath(db, run, body, cover);
+  if ('assetId' in cover && !(inactiveSavedCover?.kind === cover.kind && inactiveSavedCover.assetId === cover.assetId)) {
+    resolveFilmCoverImagePath(db, run, body, cover);
+  }
   return cover;
 }

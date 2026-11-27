@@ -506,7 +506,7 @@ export function PackagingDraftEditor({ projectId, images, entry, initialShot, dr
               setSelected(`subtitle:${draft.subtitleCues[0].id}`);
               seek(draft.subtitleCues[0].startSec + offset);
             }
-            if (item.id === 'packaging' && !selectedPoint) { setSelected('cover'); if (offset) seek(0); }
+            if (item.id === 'packaging' && !selectedPoint && position < offset) setSelected('cover');
           }}>{item.label}</button>)}
       </div>
       {tab === 'picture' && shot && <ShotInspector key={`${media.review.jobId}:${shot.id}`} projectId={projectId} images={images}

@@ -57,6 +57,24 @@ function addFile(name: string, references: Array<{ resourceType: string; resourc
 
 try {
   for (const id of ['project-a', 'project-b', 'project-c', 'project-d', 'project-e', 'project-f', 'project-g']) addProject(id);
+  const coverImage = { resourceType: 'image', resourceId: 'cover-input' };
+  db.prepare('INSERT INTO image_assets(id, projectId) VALUES (?, ?)').run(coverImage.resourceId, 'project-b');
+  registerInheritedScope(db, { ...coverImage, parent: ref('project-b') });
+  db.exec('CREATE TABLE one_click_film_packaging(optionsJson TEXT)');
+  const savedCover = JSON.stringify({ cover: false, coverMedia: { kind: 'project_image', assetId: coverImage.resourceId } });
+  const saveCover = db.prepare('INSERT INTO one_click_film_packaging VALUES (?)');
+  saveCover.run(savedCover);
+  assert.throws(() => softDeleteResource(db, admin, coverImage), { code: 'resource_in_use', status: 409 });
+  assert.equal(requireResourceAccess(db, admin, 'image', coverImage.resourceId, 'read').deletedAt, null);
+  db.exec('DELETE FROM one_click_film_packaging');
+  softDeleteResource(db, admin, coverImage);
+  saveCover.run(savedCover); // A legacy draft references an image already in the recycle bin.
+  const coverCleanup = requestPermanentCleanup(db, admin, coverImage);
+  const coverBlocked = runPermanentCleanup(db, { jobId: coverCleanup.id, storageRoot });
+  assert.equal(coverBlocked.status, 'deferred');
+  assert.ok(coverBlocked.blockers.some(blocker => blocker.kind === 'cross_module' && blocker.resourceId === 'project-b'));
+  db.exec('DELETE FROM one_click_film_packaging');
+  assert.equal(runPermanentCleanup(db, { jobId: coverCleanup.id, storageRoot }).status, 'completed');
   const fileA = addFile('a.txt', [ref('project-a')]);
   const fileShared = addFile('shared.txt', [ref('project-a'), ref('project-b')]);
   softDeleteResource(db, admin, ref('project-a'));

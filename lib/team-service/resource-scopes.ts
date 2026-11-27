@@ -31,11 +31,11 @@ export interface TeamResourceScope extends ResourceRef {
 }
 
 export class ResourceAccessError extends Error {
-  readonly code: 'resource_not_found' | 'resource_forbidden' | 'scope_missing' | 'scope_inconsistent';
+  readonly code: 'resource_not_found' | 'resource_forbidden' | 'resource_in_use' | 'scope_missing' | 'scope_inconsistent';
   readonly status: number;
 
   constructor(
-    code: 'resource_not_found' | 'resource_forbidden' | 'scope_missing' | 'scope_inconsistent',
+    code: ResourceAccessError['code'],
     message: string,
     status = code === 'resource_forbidden' ? 403 : 404,
   ) {

@@ -19,7 +19,7 @@ const { closeDb, getDb } = await import('../lib/db.ts');
 const { seedScriptProviders } = await import('../lib/seed.ts');
 const { runFfmpeg } = await import('../lib/ffmpeg.ts');
 const { getOrCreateRun, createAnalysisVersion, markAnalysisSucceeded } = await import('../lib/one-click-film/store.ts');
-const { upsertReviewFromDetection } = await import('../lib/one-click-film/review.ts');
+const { upsertReviewFromDetection, splitShot, mergeShots } = await import('../lib/one-click-film/review.ts');
 const { listPackaging, preparePackaging, updatePackagingDraft } = await import('../lib/one-click-film/packaging.ts');
 const { recognizeFilmPackagingSubtitles } = await import('../lib/one-click-film/packaging-render.ts');
 
@@ -175,6 +175,20 @@ try {
   assert.deepEqual(current().options.coverMedia, manual.options.coverMedia);
   assert.equal(current().revision, manual.revision, '晚到的自动结果不改手动草稿与修订');
 
+  const requestsBeforeCuts = requests;
+  splitShot(db, { run, jobId: body.jobId, shotId: 's1', atUs: 500_000 });
+  body = readFilmBody(db, run, 'F01')!;
+  assert.equal(current().autoCover?.status, 'pending');
+  await syncFilmAutoCover(db, run, body);
+  assert.equal(current().autoCover?.media?.frame, 18);
+  assert.deepEqual(current().options.coverMedia, manual.options.coverMedia);
+  mergeShots(db, { run, jobId: body.jobId, shotIds: ['s1','s2'] });
+  body = readFilmBody(db, run, 'F01')!;
+  await syncFilmAutoCover(db, run, body);
+  await syncFilmAutoCover(db, run, body);
+  assert.equal(current().autoCover?.media?.frame, 36);
+  assert.equal(requests, requestsBeforeCuts + 2, '按当前镜头区间刷新，相同区间重复同步不再调用');
+
   body = source('short-body', 1_000_000, []);
   assert.equal(current().autoCover?.status, 'pending');
   await syncFilmAutoCover(db, run, body);
@@ -261,7 +275,7 @@ try {
     finishSpeech.resolve();
   }
   await recognition;
-  assert.equal(current().subtitleCues[0]?.text, '真实口播。');
+  assert.equal(current().subtitleCues[0]?.text, '真实口播');
   assert.equal(current().subtitlesPrepared, true);
   const selectedAfterRecognition = current().options.coverMedia;
   assert.equal(selectedAfterRecognition?.kind === 'auto_frame' && selectedAfterRecognition.frame, 36);

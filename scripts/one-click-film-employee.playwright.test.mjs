@@ -37,6 +37,8 @@ const cosOrigin = 'https://cos.fixture.localhost';
 const coverChannel = 'company-gateway-qiniuyun-gpt-image-2-6-flare';
 const coverModel = 'qiniuyun/gpt-image-2.6-flare';
 const coverColors = ['#4c2774', '#317951'];
+// A 4:2:0 round trip shifts this warm swatch's dark palette by one RGB level.
+const detailColor = '#c87828';
 const coverPreference = '窗边柔光，产品居中偏下。';
 let app, browser, fixture, page;
 let serverLog = '';
@@ -298,6 +300,15 @@ function pixelsNear(left, right, tolerance = 6) {
 }
 const rgb = hex => Buffer.from(hex.slice(1), 'hex');
 const dataImage = url => Buffer.from(url.split(',')[1], 'base64');
+async function assertCardThumbnail(url, preview) {
+  assert.equal(new URL(url, 'http://localhost').searchParams.get('thumbnail'), '1');
+  const bytes = await responseBytes(url);
+  const { width, height } = await sharp(bytes).metadata();
+  assert.ok(Math.max(width, height) <= 240);
+  assert.deepEqual(bytes, await sharp(dataImage(preview)).resize({
+    width: 240, height: 240, fit: 'inside', withoutEnlargement: true,
+  }).jpeg().toBuffer());
+}
 async function coverHasColor(bytes, expected) {
   const pixel = await sharp(bytes).removeAlpha().resize(1, 1).raw().toBuffer();
   return pixelsNear(pixel, rgb(expected), 8);
@@ -490,12 +501,19 @@ try {
   // Exercise the render-only retry once, then let the real HyperFrames CLI produce the overlay.
   const portFailure = path.join(root, 'renderer-port-failure.cjs');
   const portMarker = path.join(root, 'renderer-port-failed');
+  const paletteLog = path.join(root, 'rendered-palettes.jsonl');
   fs.writeFileSync(portFailure, `
-    if (require('node:path').basename(process.argv[1] || '') === 'hyperframes.mjs' && process.argv[2] === 'render'
-        && !require('node:fs').existsSync(${JSON.stringify(portMarker)})) {
-      require('node:fs').writeFileSync(${JSON.stringify(portMarker)}, 'once');
-      process.stderr.write('net::ERR_UNSAFE_PORT at http://localhost:1719/index.html');
-      process.exit(1);
+    const path = require('node:path');
+    if (path.basename(process.argv[1] || '') === 'hyperframes.mjs' && process.argv[2] === 'render') {
+      const fs = require('node:fs');
+      const html = fs.readFileSync(path.join(process.argv[3], 'index.html'), 'utf8');
+      const palette = html.split('window.__palette=')[1]?.split(';</script>')[0];
+      if (palette) fs.appendFileSync(${JSON.stringify(paletteLog)}, JSON.stringify(JSON.parse(palette)) + '\\n');
+      if (!fs.existsSync(${JSON.stringify(portMarker)})) {
+        fs.writeFileSync(${JSON.stringify(portMarker)}, 'once');
+        process.stderr.write('net::ERR_UNSAFE_PORT at http://localhost:1719/index.html');
+        process.exit(1);
+      }
     }
   `);
   Object.assign(env, {
@@ -560,7 +578,7 @@ try {
         concurrencyMode: policy.concurrencyMode, paused: false, expectedVersion: policy.version,
       });
     }
-    return api.activate(id, created.credential, randomUUID());
+    return { ...await api.activate(id, created.credential, randomUUID()), userId: created.user.id };
   };
   const member = await employee('film-employee', '验收剪辑师');
   const stranger = await employee('film-stranger', '无权员工');
@@ -619,7 +637,7 @@ try {
     } finally { await transfer.dispose(); }
   };
   const sceneImage = await image('#667788');
-  const detailImage = await image('#aa8866');
+  const detailImage = await image(detailColor);
   await dropImage(page.getByRole('region', { name: '场景图', exact: true }), '场景样图.png', sceneImage);
   await dropImage(page.getByRole('region', { name: '详情页', exact: true }), '详情样图.png', detailImage);
   await page.getByLabel('添加详情页').setInputFiles({ name: '待移除.png', mimeType: 'image/png', buffer: await image('#cccccc') });
@@ -760,6 +778,35 @@ try {
   await waitForAuto('F02', 'fallback');
   await expect(page.getByText('视觉服务内容审核未通过，使用正文首帧。', { exact: true })).toBeVisible();
   assert.deepEqual(autoRequests.toSorted(), ['F01', 'F02', 'F02']);
+  const policyEndpoint = `/api/team/members/${member.userId}/policy`;
+  const setVisionPolicy = async (allowedModels, monthlyLimitMinor = null) => {
+    const policy = await api.json(admin, policyEndpoint);
+    await api.json(admin, policyEndpoint, 'PATCH', {
+      unlimited: monthlyLimitMinor === null, monthlyLimitMinor, personalConcurrency: policy.personalConcurrency, concurrencyMode: policy.concurrencyMode,
+      paused: false, expectedVersion: policy.version, allowedModels,
+    });
+  };
+  await setVisionPolicy([coverModel]);
+  await retryAuto.click();
+  await expect.poll(async () => (await packagingState('F02')).autoCover.reason, { timeout: 90_000 }).toBe('model_forbidden');
+  await expect(page.getByText('当前账号没有视觉模型权限，使用正文首帧。', { exact: true })).toBeVisible();
+  await expect(retryAuto).toBeEnabled();
+  await setVisionPolicy(null, 0);
+  await retryAuto.click();
+  // The fixture model has no verified price, so a limited budget blocks it before submission.
+  await expect.poll(async () => (await packagingState('F02')).autoCover.reason, { timeout: 90_000 }).toBe('policy_denied');
+  await expect(retryAuto).toBeEnabled();
+  const ledger = new Database(path.join(root, 'data', 'workbench.db'), { readonly: true });
+  try {
+    const refusals = ledger.prepare(`SELECT status,waitReason,currentPermitId FROM execution_operations
+      WHERE actorId=? AND step='select-cover-frame' AND waitReason IN ('model_forbidden','pricing_required')
+      ORDER BY readySeq`).all(member.userId);
+    assert.deepEqual(refusals, ['model_forbidden','pricing_required'].map(waitReason => ({
+      status: 'failed', waitReason, currentPermitId: null,
+    })));
+  } finally { ledger.close(); }
+  await setVisionPolicy(null);
+  assert.equal(autoRequests.length, 3, '已拒绝的挑帧请求不能在权限恢复后自动重发');
   await page.getByRole('tab', { name: '镜头', exact: true }).click();
   console.log('通过：员工自动封面选中第二镜，451 回退正文首帧，显式重挑后仍可进入审片。');
   stage = '真实切点调整';
@@ -998,7 +1045,7 @@ try {
   const captionTrack = page.getByRole('group', { name: '字幕', exact: true });
   await captionTrack.getByRole('button').first().click();
   const text = page.getByLabel('当前字幕');
-  await expect(text).toHaveValue('这是原片旁白。');
+  await expect(text).toHaveValue('这是原片旁白');
   await expect(page.getByLabel('字幕样式字体')).toBeVisible();
   await page.getByRole('spinbutton', { name: '字号数值', exact: true }).fill('62');
   await text.fill('这是校对后的旁白。');
@@ -1016,11 +1063,15 @@ try {
   };
   await dragBy(caption, 0, -8);
   const subtitleSvg = page.locator('[class*="captionArt"] svg');
-  await expect(subtitleSvg.locator('text').last()).toHaveText('这是校对后的旁白。');
+  await expect(subtitleSvg.locator('text').last()).toHaveText('这是校对后的旁白');
   assert.equal(await subtitleSvg.locator('tspan').count(), 0);
+  await page.getByRole('tab', { name: '镜头', exact: true }).click();
+  await playhead.fill('200');
+  await expect(playhead).toHaveValue('200');
   await page.getByRole('tab', { name: '花字包装', exact: true }).click();
   await coverPanel.getByRole('button', { name: '更换封面' }).click();
-  await page.getByRole('slider', { name: '审片时间轴播放头' }).fill('200');
+  await expect(playhead).toHaveValue('200');
+  await expect(coverPanel.getByRole('button', { name: '取当前播放画面' })).toBeEnabled();
   await expect(coverLayer).toHaveCount(0);
   await page.getByRole('button', { name: '播放', exact: true }).click();
   await expect.poll(() => page.getByLabel('F02 编辑预览').evaluate(video => video.currentTime)).toBeGreaterThan(7.5);
@@ -1058,7 +1109,7 @@ try {
   assert.equal(f02Draft.options.titleFont.file, fontId);
   assert.ok(f02Draft.options.subtitlePosition.y < 82);
   assert.ok(f02Draft.options.layouts['overlay-minimal'].cover.title);
-  assert.equal(f02Draft.subtitleCues[0].text, '这是校对后的旁白。');
+  assert.equal(f02Draft.subtitleCues[0].text, '这是校对后的旁白');
   assert.ok(f02Draft.subtitleCues[0].endSec > 2.8);
   assert.ok(f02Draft.pointCues[0].startSec > originalPointStart);
   assert.ok(f02Draft.options.assetStickers.some((sticker) => sticker.origin.kind === 'manual'));
@@ -1069,7 +1120,7 @@ try {
   const savedCover = page.getByRole('button', { name: '打开 F02 预览与编辑' }).locator('img');
   await expect(savedCover).toHaveAttribute('src', /\/packaging\?cover=F02/);
   const savedCoverUrl = await savedCover.getAttribute('src');
-  assert.deepEqual(await responseBytes(savedCoverUrl), dataImage(chosenCover));
+  await assertCardThumbnail(savedCoverUrl, chosenCover);
   assert.ok([403, 404].includes((await api.raw(stranger, savedCoverUrl)).status), '成片封面必须拒绝无权限员工');
   stage = 'GPT Image 2.6 候选生成、采用及入账';
   await openPackaging('F01');
@@ -1128,7 +1179,7 @@ try {
   await page.getByRole('button', { name: '选入导出' }).click();
   const generatedCard = beforePackaging.locator('img');
   await expect(generatedCard).toHaveAttribute('src', /\/packaging\?cover=F01/);
-  assert.deepEqual(await responseBytes(await generatedCard.getAttribute('src')), dataImage(generatedPreview));
+  await assertCardThumbnail(await generatedCard.getAttribute('src'), generatedPreview);
   assert.equal((await readPackaging()).find((item) => item.entryCode === 'F01').subtitlesPrepared, true);
   await page.getByRole('button', { name: '全选可导出成片' }).click();
   const confirmExport = async () => {
@@ -1144,7 +1195,7 @@ try {
   assert.ok(fs.existsSync(portMarker), '首次本地渲染端口不可用后应自动恢复导出');
   const autoCaption = (await readPackaging()).find((item) => item.entryCode === 'F01');
   assert.equal(autoCaption.subtitlesPrepared, true);
-  assert.equal(autoCaption.subtitleCues[0].text, '这是原片旁白。');
+  assert.equal(autoCaption.subtitleCues[0].text, '这是原片旁白');
   const deliveries = await getExports();
   const history = page.locator('[class*="exportCard"]');
   await expect(history).toHaveCount(2);
@@ -1188,7 +1239,7 @@ try {
   await selectDetail.click();
   await expect(selectDetail).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(getPalette).not.toBe(priorProjectPalette);
-  await expect.poll(async () => coverHasColor(dataImage(await coverLayer.getAttribute('src')), '#aa8866')).toBe(true);
+  await expect.poll(async () => coverHasColor(dataImage(await coverLayer.getAttribute('src')), detailColor)).toBe(true);
   const projectPreview = await coverLayer.getAttribute('src');
   await framingMode.click();
   const framingSurface = page.getByRole('region', { name: '拖动封面底图' });
@@ -1217,14 +1268,20 @@ try {
   await expect(reset).toBeDisabled();
   await overlayMode.click();
   await expect(coverLayer).toHaveAttribute('src', projectPreview);
+  const projectPalette = JSON.parse(await getPalette());
   await page.getByRole('button', { name: '保存草稿' }).click();
   await expect(page.getByText('已保存草稿。')).toBeVisible();
   const projectDraft = await packagingState('F02');
   assert.equal(projectDraft.options.coverMedia.kind, 'project_image');
   assert.equal(projectDraft.options.coverMedia.framing, undefined);
+  const blockedDelete = await api.raw(member, `/api/images/${projectDraft.options.coverMedia.assetId}`, { method: 'DELETE' });
+  assert.equal(blockedDelete.status, 409);
+  const deleteReason = await blockedDelete.json();
+  assert.equal(deleteReason.error, 'resource_in_use');
+  assert.match(deleteReason.message, /一键成片封面/);
   await page.getByRole('button', { name: '选入导出' }).click();
   await expect(savedCover).toHaveAttribute('src', /\/packaging\?cover=F02/);
-  assert.deepEqual(await responseBytes(await savedCover.getAttribute('src')), dataImage(projectPreview));
+  await assertCardThumbnail(await savedCover.getAttribute('src'), projectPreview);
   await confirmExport();
   await expect.poll(async () => (await getExports()).length, { timeout: 180_000 }).toBe(3);
   const projectDelivery = (await getExports()).find(item => item.entryCode === 'F02' && item.id !== oldF02.id);
@@ -1233,7 +1290,9 @@ try {
   const projectBytes = await responseBytes(projectDelivery.url);
   assert.equal(digest(projectBytes), projectDelivery.checksum);
   fs.writeFileSync(projectFile, projectBytes);
-  const projectMediaCheck = assertCoveredExport(projectFile, rgb('#aa8866'), path.join(root, 'hd-f02-approved.mp4'));
+  const projectMediaCheck = assertCoveredExport(projectFile, rgb(detailColor), path.join(root, 'hd-f02-approved.mp4'));
+  assert.deepEqual(JSON.parse(fs.readFileSync(paletteLog, 'utf8').trim().split('\n').at(-1)), projectPalette,
+    '正式包装与员工预览必须使用同一组封面颜色');
   files.push(projectFile);
   checked.push({ entry: 'F02', filename: path.basename(projectFile), sha256: projectDelivery.checksum, ...projectMediaCheck });
   console.log('通过：项目图片可缩放拖动和重置，三档双主题控件可达，成片卡片及正式片头使用保存封面。');
@@ -1243,6 +1302,17 @@ try {
   await page.getByLabel('F02 标题').fill('F02 第二版交付');
   await page.getByRole('checkbox', { name: '封面', exact: true }).uncheck();
   await expect(coverLayer).toHaveCount(0);
+  await expect.poll(async () => {
+    const palette = await getPalette();
+    return Boolean(palette && palette !== JSON.stringify(projectPalette));
+  }).toBe(true);
+  const bodyPalette = JSON.parse(await getPalette());
+  const missingSource = await api.json(member, packagingEndpoint, 'POST', {
+    action: 'preview', entryCode: 'F02', title: projectDraft.title, pointCues: projectDraft.pointCues,
+    options: { ...projectDraft.options, cover: false, coverMedia: { kind: 'project_image', assetId: 'removed-before-upgrade' } },
+  });
+  assert.equal(missingSource.coverImage, '');
+  assert.ok(missingSource.html.includes('window.__palette=' + JSON.stringify(bodyPalette)));
   await page.getByRole('tab', { name: '字幕', exact: true }).click();
   await page.getByLabel('显示口播字幕').uncheck();
   await page.getByRole('button', { name: '选入导出' }).click();
@@ -1252,6 +1322,7 @@ try {
   const withoutCover = (await getExports()).find((item) => item.title === 'F02 第二版交付');
   assert.notEqual(withoutCover.checksum, oldF02.checksum);
   assert.equal(withoutCover.versions.coverEnabled, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(paletteLog, 'utf8').trim().split('\n').at(-1)), bodyPalette);
   assert.deepEqual(withoutCover.versions.coverMedia, projectDelivery.versions.coverMedia);
   const noCoverFile = path.join(root, 'F02-no-cover.mp4');
   fs.writeFileSync(noCoverFile, await responseBytes(withoutCover.url));
@@ -1261,6 +1332,10 @@ try {
   assert.equal(Number(noCoverVideo.nb_read_frames), 360);
   assert.ok(noCoverStreams.some(stream => stream.codec_type === 'audio'));
   assertContinuousAudio(noCoverFile, 0, true);
+  assert.equal(digest(fs.readFileSync(noCoverFile)), withoutCover.checksum);
+  files.push(noCoverFile);
+  checked.push({ entry: 'F02', filename: path.basename(noCoverFile), sha256: withoutCover.checksum,
+    fps: noCoverVideo.avg_frame_rate, frames: Number(noCoverVideo.nb_read_frames), coverEnabled: false });
   const withoutCaptions = (await readPackaging()).find((item) => item.entryCode === 'F02');
   assert.equal(withoutCaptions.options.subtitles, false);
   assert.deepEqual(withoutCaptions.subtitleCues, f02Draft.subtitleCues, '关闭字幕导出仍保留已校对的字幕');

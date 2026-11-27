@@ -14,6 +14,7 @@ import { assertPackagingLayoutExportReady, packagingLayoutEngineExecutable } fro
 export async function renderVideoPackaging(input: {
   videoPath: string; coverPath: string; config: FinalEditPackagingConfig; totalSec: number;
   staticCover?: boolean;
+  paletteImagePath?: string;
   coverEnabled?: boolean;
   signal?: AbortSignal; onProgress?: (value: number) => void;
 }): Promise<void> {
@@ -50,7 +51,8 @@ export async function renderVideoPackaging(input: {
   if (input.coverEnabled === false) vars.hideCover = true;
   await fs.writeFile(varsPath, JSON.stringify(vars), 'utf8');
   await runPackagingPipeline({ nodeExe: resolvePackagingNode(), packagingDir: dir,
-    args: [path.join(resourceDir, 'package-video.mjs'), input.videoPath, varsPath, output, template], signal: input.signal, onStage: input.onProgress,
+    args: [path.join(resourceDir, 'package-video.mjs'), input.videoPath, varsPath, output, template,
+      ...(input.paletteImagePath ? [input.paletteImagePath] : [])], signal: input.signal, onStage: input.onProgress,
     layoutBundleDir: layoutBundle?.bundleDir,
     layoutEngineExecutable: layoutBundle ? packagingLayoutEngineExecutable(layoutBundle.manifest) : undefined });
   input.signal?.throwIfAborted();

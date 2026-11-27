@@ -11,7 +11,7 @@ process.env.CREATIVE_STUDIO_DATA_ROOT = dataRoot;
 process.env.CREATIVE_STUDIO_DEPLOYMENT_MODE = 'local';
 register('./typescript-extension-loader.mjs', import.meta.url);
 
-const { ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
+const { ONE_CLICK_FILM_MIGRATIONS, ensureOneClickFilmSchemaReady } = await import('../lib/one-click-film/schema.ts');
 const {
   parseEntryCount, parseStructurePlan, structureAt, entryCode, parseSoundMode,
   parseModelPreset, parseModelSelection, inferModelFromContext, resolveModelSelection, formatModelLabel,
@@ -154,10 +154,11 @@ db.exec(`
   INSERT INTO projects (id, name) VALUES ('proj-1', '20261120-X店-XQ9A-AI种草-紫菜卷');
 `);
 const backupRoot = path.join(dataRoot, 'data', 'backups', 'schema-upgrades');
-const first = await ensureOneClickFilmSchemaReady({ db, backupRoot });
-assert.equal(first.state, 'ready');
-const second = await ensureOneClickFilmSchemaReady({ db, backupRoot });
-assert.equal(second.state, 'current', '重复执行迁移必须幂等');
+db.exec('CREATE TABLE one_click_film_schema_migrations (version INTEGER PRIMARY KEY, appliedAt TEXT NOT NULL)');
+for (const migration of ONE_CLICK_FILM_MIGRATIONS.filter(item => item.version <= 15)) {
+  db.exec(migration.sql);
+  db.prepare("INSERT INTO one_click_film_schema_migrations VALUES (?, datetime('now'))").run(migration.version);
+}
 
 const run = getOrCreateRun(db, 'proj-1');
 assert.equal(getOrCreateRun(db, 'proj-1').id, run.id, '同一项目复用同一个 run');
@@ -196,6 +197,34 @@ assert.deepEqual(applied.added, ['F01', 'F02']);
 assert.deepEqual(applied.entries.map((entry) => entry.code), ['F01', 'F02']);
 assert.deepEqual(applied.entries.map((entry) => entry.structure), ['scene', 'problem']);
 assert.ok(applied.entries.every((entry) => entry.sellingPointsSnapshot.length === 2));
+
+const legacyCover = db.prepare(`INSERT INTO one_click_film_cover_assets
+  (id,runId,projectId,entryId,entryCode,status,requestKey,requestHash,providerId,model,referenceImagesJson,
+    prompt,requestedSize,providerFingerprint,remoteId,errorCode,createdAt,updatedAt)
+  VALUES (?,?,'proj-1',?,'F01','failed',?,'hash','p','m','[]','','1024x1024','fp',?,?,datetime('now'),datetime('now'))`);
+for (const [id, remoteId, reason] of [['timed-out','opaque/id','poll_timeout'], ['rejected',null,'policy']]) {
+  legacyCover.run(id, run.id, applied.entries[0].id, id, remoteId, reason);
+}
+const legacyPackaging = db.prepare(`INSERT INTO one_click_film_packaging
+  (id,runId,entryId,entryCode,status,optionsJson,relativePath,createdAt,updatedAt)
+  VALUES (?,?,?,?,'ready',?,'old.mp4',datetime('now'),datetime('now'))`);
+for (const entry of applied.entries) {
+  const options = entry.code === 'F01' ? { cover: true } : { cover: false, decoration: false };
+  legacyPackaging.run(entry.code, run.id, entry.id, entry.code, JSON.stringify(options));
+}
+const first = await ensureOneClickFilmSchemaReady({ db, backupRoot });
+assert.equal(first.state, 'ready');
+const migratedPackaging = db.prepare('SELECT status,revision FROM one_click_film_packaging WHERE entryCode=?');
+assert.deepEqual(migratedPackaging.get('F01'), { status: 'pending', revision: 2 });
+assert.deepEqual(migratedPackaging.get('F02'), { status: 'ready', revision: 1 });
+const migratedCover = db.prepare('SELECT status, remoteId, nextAttemptAt FROM one_click_film_cover_assets WHERE id=?');
+assert.deepEqual(migratedCover.get('rejected'), { status: 'failed', remoteId: null, nextAttemptAt: null });
+const timedOut = migratedCover.get('timed-out') as { status: string; remoteId: string; nextAttemptAt: string };
+assert.equal(timedOut.status, 'running');
+assert.equal(timedOut.remoteId, 'opaque/id');
+assert.ok(Date.parse(timedOut.nextAttemptAt) <= Date.now());
+const second = await ensureOneClickFilmSchemaReady({ db, backupRoot });
+assert.equal(second.state, 'current', '重复执行迁移必须幂等');
 
 // 手改并确认 F01，只重做 F02。
 const f01Before = getEntry(db, run.id, 'F01');

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 const {
   IMAGE_REFERENCE_COUNTS_SQL,
+  readImageReferenceCounts,
   getImageDeleteBlockers,
   getImageDeleteBlockMessage,
 } = await import('../lib/image-delete-policy' + '.ts');
@@ -56,3 +57,9 @@ assert.deepEqual(
   ['1 个视频任务'],
   'a tail-only video reference must block image deletion',
 );
+assert.deepEqual(readImageReferenceCounts(db, 'tail-only-asset'), { ...tailOnlyRefs, coverRefs: 0 }, '未启用一键成片的旧库仍能检查普通引用');
+db.exec(`CREATE TABLE one_click_film_packaging(optionsJson TEXT);
+  INSERT INTO one_click_film_packaging VALUES
+  ('{"cover":false,"coverMedia":{"kind":"project_image","assetId":"cover-only"}}'),
+  ('{"coverMedia":{"kind":"generated_image","assetId":"cover-only"}}');`);
+assert.deepEqual(getImageDeleteBlockers(readImageReferenceCounts(db, 'cover-only')), ['1 个一键成片封面']);

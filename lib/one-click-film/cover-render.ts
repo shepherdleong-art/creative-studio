@@ -78,12 +78,12 @@ export async function previewFilmCoverFramingSource(db: Database.Database, run: 
   });
 }
 
-export async function previewFilmCover(db: Database.Database, run: OneClickFilmRun, body: FilmBody, media?: FilmCoverMedia) {
+export async function previewFilmCover(db: Database.Database, run: OneClickFilmRun, body: FilmBody, media?: FilmCoverMedia, thumbnail = false) {
   const cover = resolveFilmCoverMedia(media, body);
   const imagePath = 'assetId' in cover ? resolveFilmCoverImagePath(db, run, body, cover) : undefined;
   const bodyPath = await previewBodyPath(db, run, body);
   const imageStat = imagePath ? await fs.stat(imagePath).catch(() => { throw unavailableFilmCoverImage(); }) : undefined;
-  const key = JSON.stringify([bodyPath, 'frame' in cover ? cover.frame : null, cover.framing, imagePath, imageStat?.mtimeMs]);
+  const key = JSON.stringify([bodyPath, 'frame' in cover ? cover.frame : null, cover.framing, imagePath, imageStat?.mtimeMs, thumbnail]);
   const cached = coverPreviews.get(key);
   if (cached) {
     coverPreviews.delete(key);
@@ -93,6 +93,7 @@ export async function previewFilmCover(db: Database.Database, run: OneClickFilmR
   const pending = withCoverWorkDir(run, async work => {
     const jpgPath = path.join(work, 'cover.jpg');
     await writeFilmCover({ bodyPath, cover, imagePath, jpgPath });
+    if (thumbnail) return sharp(jpgPath).resize({ width: 240, height: 240, fit: 'inside', withoutEnlargement: true }).jpeg().toBuffer();
     return fs.readFile(jpgPath);
   });
   coverPreviews.set(key, pending);

@@ -23,6 +23,7 @@ export interface FilmCoverCandidate {
   status: 'queued' | 'running' | 'ready' | 'failed';
   channel: string;
   message: string | null;
+  submissionUnconfirmed?: boolean;
   createdAt: string;
   imageUrl?: string;
   thumbnailUrl?: string;

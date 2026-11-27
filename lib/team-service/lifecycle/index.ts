@@ -11,6 +11,7 @@ import {
   type TeamResourceScope,
 } from '../resource-scopes.ts';
 import { deleteProjectRecords } from '../../project-delete.ts';
+import { countImageCoverReferences } from '../../image-delete-policy.ts';
 import { resolveStoragePath } from '../../media-core/storage-path.ts';
 
 export interface LifecycleMutation extends ResourceRef {
@@ -55,6 +56,9 @@ export function softDeleteResource(
   requireResourceAccess(db, principal, ref.resourceType, ref.resourceId, 'write');
   const at = now().toISOString();
   return db.transaction(() => {
+    if (ref.resourceType === 'image' && countImageCoverReferences(db, ref.resourceId)) {
+      throw new ResourceAccessError('resource_in_use', '该图片仍被一键成片封面引用，请先更换关联的封面。', 409);
+    }
     const scopes = descendants(db, ref);
     const eventId = randomUUID();
     db.prepare(`
@@ -424,6 +428,13 @@ function imageBusinessBlockers(db: Database.Database, scopes: TeamResourceScope[
       });
     }
   };
+  for (const scope of scopes) {
+    // Removing the whole project also removes its own packaging drafts.
+    if (scope.resourceType === 'image' && !purgeScopes.has(`project:${scope.rootId}`)
+      && countImageCoverReferences(db, scope.resourceId)) {
+      external('project', scope.rootId, scope.resourceId);
+    }
+  }
   if (tableExists(db, 'jobs')) {
     const rows = db.prepare('SELECT id, inputImageId, outputImageId, referenceImageIds FROM jobs').all() as Array<{
       id: string; inputImageId: string | null; outputImageId: string | null; referenceImageIds: string;

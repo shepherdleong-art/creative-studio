@@ -186,7 +186,11 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
         const result = await fetch(`${base}/packaging`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: abort.signal,
           body: JSON.stringify({ action: 'recognize-subtitles', entryCode, revision: subtitleRevision, prepareIfMissing: fromOpen }) }).then(readResponse);
         if (abort.signal.aborted) return;
-        if (result.subtitleWaiting) { timer = setTimeout(() => void check(), 5000); return; }
+        if (result.subtitleWaiting) {
+          setNotice(result.subtitleWarning || '口播识别正在等待名额，空出后自动对时。');
+          timer = setTimeout(() => void check(), 5000);
+          return;
+        }
         const updated = result.packaging?.find(item => item.entryCode === entryCode);
         if (!updated) throw new Error('未能读取字幕识别结果');
         setRecords(result.packaging!);
@@ -358,7 +362,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
       const result = await post('packaging', { action: 'recognize-subtitles', entryCode: record.entryCode, revision: record.revision });
       if (result.subtitleWaiting) {
         setSubtitleWaiting({ entryCode: record.entryCode, fromOpen: false });
-        setNotice('口播识别正在等待名额，空出后自动对时。');
+        setNotice(result.subtitleWarning || '口播识别正在等待名额，空出后自动对时。');
         return;
       }
       const updated = result.packaging?.find((item) => item.entryCode === record.entryCode);
@@ -478,7 +482,7 @@ export function PackagingStage({ state, focus, onAdjustSound }: { state: FilmSta
           const preview = previews.find((item) => item.entryCode === entry.code);
           const failed = record?.status === 'failed';
           const coverUrl = preview && record && (record.options.cover || record.options.coverMedia)
-            ? `${base}/packaging?${new URLSearchParams({ cover: entry.code, revision: String(record.revision), signature: preview.signature })}` : undefined;
+            ? `${base}/packaging?${new URLSearchParams({ cover: entry.code, thumbnail: '1', revision: String(record.revision), signature: preview.signature })}` : undefined;
           return <article key={entry.id} className={styles.packagingCard}>
             <FilmCover url={record?.videoUrl || preview?.url} coverUrl={coverUrl} startSec={record?.videoUrl ? 0 : preview?.startSec ?? 0}
               label={`打开 ${entry.code} 预览与编辑`} disabled={busy || !preview} onOpen={() => void openEditor(entry.code)} />

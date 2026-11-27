@@ -29,6 +29,8 @@ export function FilmCoverGenerationPanel({ projectId, entryCode, template, image
   const request = useRef<{ key: string; intent: string } | null>(null);
   const inFlight = useRef(false);
   const pending = candidates.some(candidate => candidate.status === 'queued' || candidate.status === 'running');
+  const generating = candidates.some(candidate => candidate.status === 'queued' || (candidate.status === 'running' && !candidate.submissionUnconfirmed));
+  const lastUnconfirmed = candidates.at(-1)?.submissionUnconfirmed;
   const maxReferences = config?.maxReferences ?? MAX_FILM_COVER_REFERENCES;
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -109,8 +111,8 @@ export function FilmCoverGenerationPanel({ projectId, entryCode, template, image
         value={preference} disabled={submitting} onChange={event => setPreference(event.target.value)} />
     </label>
     <div className={styles.inlineActions}>
-      <button type="button" className="cap" disabled={busy || pending || submitting || !config?.enabled || !providerId}
-        onClick={() => { void generate(); }}>{submitting ? '正在提交' : '生成全景封面'}</button>
+      <button type="button" className="cap" disabled={busy || generating || submitting || !config?.enabled || !providerId}
+        onClick={() => { void generate(); }}>{submitting ? '正在提交' : lastUnconfirmed ? '另生成一张（单独计费）' : '生成全景封面'}</button>
     </div>
     {error ? <p className={styles.hintFail} role="alert">{error}</p> : null}
     {candidates.length ? <div className={styles.filmCoverShots} role="group" aria-label="全景封面候选">

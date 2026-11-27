@@ -17,7 +17,7 @@ const {
   buildDecorationCues, buildSubtitleCues, filmTimeForBodyTime, packagingEligibility, parsePackagingOptions,
   preparePackaging, updatePackagingDraft, listPackaging,
 } = await import('../lib/one-click-film/packaging.ts');
-const { packagingOverlayConfig, splitFilmCoverTitle, stickersForFilmPoints } = await import('../lib/one-click-film/packaging-edit.ts');
+const { filmCaptionSvg, resolveFilmSubtitleStyle, splitSubtitleCues, packagingOverlayConfig, splitFilmCoverTitle, stickersForFilmPoints } = await import('../lib/one-click-film/packaging-edit.ts');
 const { exportEligibility, exportEntries, exportZipEntries, listExports } = await import('../lib/one-click-film/exports.ts');
 const { readFilmBody } = await import('../lib/one-click-film/composition.ts');
 const { composeCoverJpg } = await import('../lib/media-core/cover-compose.ts');
@@ -43,7 +43,13 @@ assert.equal(parsePackagingOptions({ coverMedia: { kind: 'video_frame', frame: 1
 
 // ── 字幕：不配音跳过；TTS 按实测音频时长对时 ──
 const nativeCues = buildSubtitleCues({ narration: '第一句。第二句。', soundMode: 'native', durationSec: 15 });
-assert.equal(nativeCues.length, 2);
+assert.deepEqual(nativeCues.map(cue => cue.text), ['第一句', '第二句']);
+const savedCue = { id: 'edited', text: '靠久了脖子累。', startSec: 1.25, endSec: 2.5 };
+assert.deepEqual(splitSubtitleCues([savedCue]), [{ ...savedCue, text: '靠久了脖子累' }]);
+assert.deepEqual(splitSubtitleCues([{ ...savedCue, text: '，。' }]), []);
+const style = resolveFilmSubtitleStyle();
+assert.equal(filmCaptionSvg(style, '厚3.5cm，够软。', 720, 960), filmCaptionSvg(style, '厚3.5cm 够软', 720, 960));
+assert.deepEqual(splitSubtitleCues([{ ...savedCue, text: '厚3.5cm,' }]), [{ ...savedCue, text: '厚3.5cm' }]);
 assert.equal(nativeCues[0]!.startSec, 0);
 assert.equal(nativeCues[1]!.endSec, 15);
 assert.deepEqual(buildSubtitleCues({ narration: '第一句。', soundMode: 'none', durationSec: 15 }), []);
@@ -212,6 +218,18 @@ const selectedImage = updatePackagingDraft(db, { run, entryCode: 'F01', expected
   options: { coverMedia: { kind: 'project_image', assetId: 'detail', framing: { scale: 5, offsetX: -8, offsetY: 6 } } },
 })[0]!;
 assert.deepEqual(selectedImage.options.coverMedia, { kind: 'project_image', assetId: 'detail', framing: { scale: 3, offsetX: -1, offsetY: 1 } });
+db.exec('SAVEPOINT missing_cover');
+try {
+  db.prepare("DELETE FROM image_assets WHERE id='detail'").run();
+  const disabledMissing = updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 6,
+    title: '关闭缺图的片头', options: { cover: false, coverMedia: selectedImage.options.coverMedia } })[0]!;
+  assert.deepEqual(disabledMissing.options.coverMedia, selectedImage.options.coverMedia);
+  assert.equal(disabledMissing.options.cover, false);
+  assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 7, options: { cover: true } }),
+    { status: 400, message: '当前封面图片不可用' });
+  assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 7,
+    options: { cover: false, coverMedia: { kind: 'project_image', assetId: 'other-project' } } }), { status: 400 });
+} finally { db.exec('ROLLBACK TO missing_cover; RELEASE missing_cover'); }
 for (const assetId of ['other-project', 'different-usage', 'missing-file', '../detail.jpg']) {
   assert.throws(() => updatePackagingDraft(db, { run, entryCode: 'F01', expectedRevision: 6,
     options: { coverMedia: { kind: 'project_image', assetId } },
