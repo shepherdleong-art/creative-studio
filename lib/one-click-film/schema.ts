@@ -529,6 +529,14 @@ export const ONE_CLICK_FILM_MIGRATIONS: ReadonlyArray<OneClickFilmMigration> = [
         OR json_array_length(optionsJson,'$.assetStickers')>0 ELSE 1 END;
     `,
   },
+  {
+    version: 17,
+    sql: `
+      ALTER TABLE one_click_film_cover_assets ADD COLUMN deliveryUrl TEXT;
+      UPDATE one_click_film_cover_assets SET status='running', nextAttemptAt=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE status='failed' AND errorCode='submission_unknown' AND operationId IS NOT NULL;
+    `,
+  },
 ];
 
 export type OneClickFilmSchemaFailureCode =

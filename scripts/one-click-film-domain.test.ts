@@ -200,10 +200,15 @@ assert.ok(applied.entries.every((entry) => entry.sellingPointsSnapshot.length ==
 
 const legacyCover = db.prepare(`INSERT INTO one_click_film_cover_assets
   (id,runId,projectId,entryId,entryCode,status,requestKey,requestHash,providerId,model,referenceImagesJson,
-    prompt,requestedSize,providerFingerprint,remoteId,errorCode,createdAt,updatedAt)
-  VALUES (?,?,'proj-1',?,'F01','failed',?,'hash','p','m','[]','','1024x1024','fp',?,?,datetime('now'),datetime('now'))`);
-for (const [id, remoteId, reason] of [['timed-out','opaque/id','poll_timeout'], ['rejected',null,'policy']]) {
-  legacyCover.run(id, run.id, applied.entries[0].id, id, remoteId, reason);
+    prompt,requestedSize,providerFingerprint,remoteId,errorCode,operationId,createdAt,updatedAt)
+  VALUES (?,?,'proj-1',?,'F01','failed',?,'hash','p','m','[]','','1024x1024','fp',?,?,?,datetime('now'),datetime('now'))`);
+for (const [id, remoteId, reason, operationId] of [
+  ['timed-out', 'opaque/id', 'poll_timeout', null],
+  ['rejected', null, 'policy', null],
+  ['unconfirmed-team', null, 'submission_unknown', 'team-operation'],
+  ['unconfirmed-local', null, 'submission_unknown', null],
+]) {
+  legacyCover.run(id, run.id, applied.entries[0].id, id, remoteId, reason, operationId);
 }
 const legacyPackaging = db.prepare(`INSERT INTO one_click_film_packaging
   (id,runId,entryId,entryCode,status,optionsJson,relativePath,createdAt,updatedAt)
@@ -223,6 +228,10 @@ const timedOut = migratedCover.get('timed-out') as { status: string; remoteId: s
 assert.equal(timedOut.status, 'running');
 assert.equal(timedOut.remoteId, 'opaque/id');
 assert.ok(Date.parse(timedOut.nextAttemptAt) <= Date.now());
+const unconfirmed = migratedCover.get('unconfirmed-team') as { status: string; nextAttemptAt: string };
+assert.equal(unconfirmed.status, 'running');
+assert.ok(Date.parse(unconfirmed.nextAttemptAt) <= Date.now());
+assert.deepEqual(migratedCover.get('unconfirmed-local'), { status: 'failed', remoteId: null, nextAttemptAt: null });
 const second = await ensureOneClickFilmSchemaReady({ db, backupRoot });
 assert.equal(second.state, 'current', '重复执行迁移必须幂等');
 

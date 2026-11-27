@@ -26,6 +26,7 @@ export interface FilmCoverAsset extends Pick<FilmCoverCandidate, 'id' | 'entryCo
   usageSnapshotJson: string | null;
   operationId: string | null;
   remoteId: string | null;
+  deliveryUrl: string | null;
   submittedAt: string | null;
   nextAttemptAt: string | null;
   relativePath: string | null;

@@ -71,8 +71,8 @@ function failOperation(db: Database.Database, operationId: string, code: string)
 function lastCoverRejection(db: Database.Database, operationId: string): string | undefined {
   // A confirmed non-creation releases the permit and clears currentAttemptId. Keep
   // an explicit rejection terminal for this candidate even if the worker crashed before writeback.
-  return db.prepare(`SELECT errorCode FROM execution_attempts WHERE operationId=? AND terminalState='not_created'
-    AND errorCode<>? ORDER BY transportSeq DESC LIMIT 1`).pluck().get(operationId, NOT_SENT_RETRY) as string | undefined;
+  return db.prepare(`SELECT COALESCE(errorCode,'rejected') FROM execution_attempts WHERE operationId=? AND terminalState='not_created'
+    AND errorCode IS NOT ? ORDER BY transportSeq DESC LIMIT 1`).pluck().get(operationId, NOT_SENT_RETRY) as string | undefined;
 }
 
 function remainingPollTime(asset: FilmCoverAsset, attempt?: AttemptRecord): number {
@@ -133,7 +133,7 @@ async function publishImage(db: Database.Database, asset: FilmCoverAsset, signal
     registerManagedFile({ absolutePath: file, mimeType: 'image/png',
       references: [{ resourceType: 'project', resourceId: asset.projectId, role: 'derivative' }] });
     db.prepare(`UPDATE one_click_film_cover_assets SET status='ready', relativePath=?, width=?, height=?,
-      errorCode=NULL, message=NULL, nextAttemptAt=NULL, updatedAt=? WHERE id=?`).run(relative, width, height, new Date().toISOString(), asset.id);
+      deliveryUrl=NULL, errorCode=NULL, message=NULL, nextAttemptAt=NULL, updatedAt=? WHERE id=?`).run(relative, width, height, new Date().toISOString(), asset.id);
   }).immediate();
 }
 
@@ -176,13 +176,18 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
     if (operation) failOperation(db, operation.id, reason);
     return updateAsset(db, asset.id, 'failed', reason);
   }
-  const previousRejection = operation && !attempt ? lastCoverRejection(db, operation.id) : undefined;
+  const previousRejection = operation && (!attempt || attempt.submissionState === 'not_sent') ? lastCoverRejection(db, operation.id) : undefined;
   if (operation && previousRejection) {
     failOperation(db, operation.id, previousRejection);
     return updateAsset(db, asset.id, 'failed', previousRejection);
   }
   const remoteId = attempt?.remoteId ?? asset.remoteId;
-  const sent = Boolean(remoteId || asset.submittedAt || attempt?.submissionState === 'maybe_sent' || attempt?.terminalState === 'succeeded');
+  // An ambiguous team submission can still receive evidence after the polling deadline.
+  if ((runtime || asset.operationId) && !remoteId && !asset.deliveryUrl && attempt?.terminalState !== 'succeeded'
+    && (attempt?.submissionState === 'maybe_sent' || attempt?.submissionState === 'accepted' || asset.errorCode === 'submission_unknown')) {
+    return updateAsset(db, asset.id, 'running', 'submission_unknown', REVIEW_INTERVAL);
+  }
+  const sent = Boolean(remoteId || asset.deliveryUrl || asset.submittedAt || attempt?.terminalState === 'succeeded');
   const provider = findFilmCoverProvider(db, asset.providerId, sent);
   if (!provider || filmCoverProviderFingerprint(provider) !== asset.providerFingerprint) {
     if (sent) {
@@ -191,18 +196,14 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
     if (operation) failOperation(db, operation.id, 'unavailable');
     return updateAsset(db, asset.id, 'failed', 'unavailable');
   }
-  if (remoteId || attempt?.terminalState === 'succeeded') {
+  if (remoteId || asset.deliveryUrl || attempt?.terminalState === 'succeeded') {
     return pollCover(db, asset, provider, remoteId, attempt, snapshot, cost, signal, facade);
   }
   if (sent) {
     if (!runtime && await fs.stat(filmStoragePath(resultPath(asset))).then(stat => stat.isFile(), () => false)) {
       return pollCover(db, asset, provider, null, undefined, snapshot, cost, signal, facade);
     }
-    // A durable execution receipt can arrive later via journal recovery or administrator reconciliation.
-    const remaining = runtime && remainingPollTime(asset, attempt);
-    return remaining
-      ? updateAsset(db, asset.id, 'running', 'submission_unknown', Math.min(remaining, REVIEW_INTERVAL))
-      : updateAsset(db, asset.id, 'failed', 'submission_unknown');
+    return updateAsset(db, asset.id, 'failed', 'submission_unknown');
   }
   if (runtime && operation && !grant) {
     if (operation.status === 'failed' || !isConcurrencyWait(operation.waitReason)) {
@@ -251,8 +252,10 @@ async function generateCover(db: Database.Database, asset: FilmCoverAsset, signa
       const result = await submitCosGatewayImage({ model: asset.model, size: asset.requestedSize, prompt: asset.prompt, imageUrls }, provider.apiKey, provider.baseUrl, signal);
       const remoteId = result.taskId || undefined;
       if (result.immediateImageUrl) {
-        try { await saveImage(asset, result.immediateImageUrl, provider, signal); }
-        catch { /* The provider generated a billable image even when local delivery failed. */ }
+        // Keep the signed delivery URL private and durable before acknowledging the billable result.
+        db.prepare(`UPDATE one_click_film_cover_assets SET deliveryUrl=?, remoteId=?, submittedAt=COALESCE(submittedAt,?) WHERE id=?`)
+          .run(result.immediateImageUrl, remoteId ?? null, new Date().toISOString(), asset.id);
+        asset.deliveryUrl = result.immediateImageUrl;
         return { remoteId, terminalState: 'succeeded', actualCost: cost };
       }
       if (remoteId) return { remoteId };
@@ -297,13 +300,18 @@ async function pollCover(db: Database.Database, asset: FilmCoverAsset, provider:
     if (!remaining) return updateAsset(db, asset.id, 'running', reason === 'delivery' ? 'delivery' : 'poll_timeout', REVIEW_INTERVAL);
     return updateAsset(db, asset.id, 'running', reason, Math.min(interval, remaining));
   };
-  let imageUrl: string | undefined;
+  let imageUrl = asset.deliveryUrl;
   const hasImage = await fs.stat(filmStoragePath(resultPath(asset))).then(stat => stat.isFile(), () => false);
   signal.throwIfAborted();
+  if (imageUrl && attempt?.submissionState === 'maybe_sent' && facade) {
+    // The process may have stopped after recording the direct result and before attaching its execution receipt.
+    attempt = await facade.reconcile({ attemptId: attempt.id, source: 'provider',
+      evidence: { kind: 'terminal', outcome: 'succeeded', actualCost: cost, resultRef: asset.id } });
+  }
   if (attempt?.terminalState === 'succeeded' && attempt.costState !== 'settled') {
     await facade?.settle({ attemptId: attempt.id, outcome: 'succeeded', actualCost: cost, remoteTerminal: true, result: { coverAssetId: asset.id } });
   }
-  if (remoteId && !hasImage) {
+  if (remoteId && !hasImage && !imageUrl) {
     const waitingReason = attempt?.terminalState === 'succeeded' ? 'delivery' : 'polling';
     const result = await readGatewayTaskImage(remoteId, provider.apiKey, provider.baseUrl, signal).catch(() => null);
     signal.throwIfAborted();
@@ -328,12 +336,22 @@ async function pollCover(db: Database.Database, asset: FilmCoverAsset, provider:
     actualCost: cost, remoteTerminal: true, result: { coverAssetId: asset.id } });
   try {
     recordImageUsage(db, asset, snapshot, attempt);
-    if (imageUrl) await saveImage(asset, imageUrl, provider, signal);
+    if (imageUrl && !hasImage) {
+      try {
+        await saveImage(asset, imageUrl, provider, signal);
+      } catch (error) {
+        if (signal.aborted || !asset.deliveryUrl || !remoteId) throw error;
+        // Some synchronous replies also carry a task ID that can refresh an expired download URL.
+        const refreshed = await readGatewayTaskImage(remoteId, provider.apiKey, provider.baseUrl, signal);
+        if (refreshed.status !== 'succeeded' || !refreshed.imageUrl || refreshed.imageUrl === imageUrl) throw error;
+        await saveImage(asset, refreshed.imageUrl, provider, signal);
+      }
+    }
     await publishImage(db, asset, signal);
   } catch {
     if (signal.aborted) return;
     if (attempt) await facade?.captureError({ attemptId: attempt.id, outcome: 'failed', stage: 'download', errorCode: 'cover_delivery' });
-    if (remoteId) waitForResult('delivery', REVIEW_INTERVAL);
+    if (remoteId || asset.deliveryUrl || hasImage) waitForResult('delivery', REVIEW_INTERVAL);
     else updateAsset(db, asset.id, 'failed', 'delivery');
   }
 }
@@ -373,17 +391,19 @@ function startFilmCoverWorker(db: Database.Database): void {
       if (signal.aborted || !db.open) return;
       const code = error instanceof ExecutionError ? error.code : 'internal';
       const current = findAsset.get(id) as FilmCoverAsset | undefined;
-      const operation = current?.operationId ? readOperation(db, current.operationId) : undefined;
-      const attempt = operation?.currentAttemptId ? readAttempt(db, operation.currentAttemptId) : undefined;
       if (!current) return;
+      if (current.deliveryUrl) return updateAsset(db, id, 'running', 'delivery', REVIEW_INTERVAL);
+      if (current.errorCode === 'submission_unknown' && current.operationId) {
+        return updateAsset(db, id, 'running', 'submission_unknown', REVIEW_INTERVAL);
+      }
+      const operation = current.operationId ? readOperation(db, current.operationId) : undefined;
+      const attempt = operation?.currentAttemptId ? readAttempt(db, operation.currentAttemptId) : undefined;
       if (current.remoteId || attempt?.remoteId) {
         const remaining = remainingPollTime(current, attempt);
         if (remaining) updateAsset(db, id, 'running', 'polling', Math.min(remaining, REVIEW_INTERVAL));
         else updateAsset(db, id, 'running', 'poll_timeout', REVIEW_INTERVAL);
       } else if (attempt?.submissionState === 'maybe_sent' || attempt?.submissionState === 'accepted') {
-        const remaining = remainingPollTime(current, attempt);
-        if (remaining) updateAsset(db, id, 'running', 'submission_unknown', Math.min(remaining, REVIEW_INTERVAL));
-        else updateAsset(db, id, 'failed', 'submission_unknown');
+        updateAsset(db, id, 'running', 'submission_unknown', REVIEW_INTERVAL);
       } else if (current.submittedAt) updateAsset(db, id, 'failed', 'submission_unknown');
       else if (isConcurrencyWait(code) || code === 'execution_not_ready') updateAsset(db, id, 'queued', 'waiting', POLL_INTERVAL);
       else {

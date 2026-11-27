@@ -55,6 +55,10 @@ let missingPolls = 0;
 const originalRemoteId = 'video_ab+c/d==';
 const originalRemotePath = '/v1/videos/' + encodeURIComponent(originalRemoteId);
 let remoteCompleted = false;
+let submitMode: 'queued' | 'ambiguous' | 'direct' | 'direct-with-id' | 'unreadable' = 'queued';
+const directUrl = vendor + '/direct.png?signature=fixture-private-delivery';
+let directDownloads = 0;
+let latePolls = 0;
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
   if (url.hostname === 'cos.example.test' || url.hostname === cosOrigin) {
@@ -67,8 +71,22 @@ globalThis.fetch = async (input, init) => {
     providerCalls.push('image');
     posts++;
     for (const ref of JSON.parse(String(init.body)).images ?? []) sentReferenceHosts.push(new URL(ref).hostname);
+    if (submitMode === 'ambiguous') throw new Error('Connection lost after submit');
+    if (submitMode === 'direct') return Response.json({ status: 'completed', url: directUrl });
+    if (submitMode === 'direct-with-id') return Response.json({ id: 'renewable', status: 'completed', url: vendor + '/expired.png' });
+    if (submitMode === 'unreadable') return Response.json({ id: 'unreadable', status: 'queued' });
     return Response.json({ id: posts === 1 ? originalRemoteId : 'cover-remote-' + posts, status: 'queued' });
   }
+  if (url.pathname === '/v1/videos/late-cover') {
+    latePolls++;
+    return Response.json({ status: 'completed', url: vendor + '/image.png' });
+  }
+  if (url.href === directUrl) {
+    directDownloads++;
+    return directDownloads === 1 ? new Response(null, { status: 503 }) : new Response(new Uint8Array(png));
+  }
+  if (url.pathname === '/expired.png') return new Response(null, { status: 403 });
+  if (url.pathname === '/v1/videos/renewable') return Response.json({ status: 'completed', url: vendor + '/image.png' });
   if (url.pathname === originalRemotePath) {
     missingPolls++;
     if (remoteCompleted) return Response.json({ id: 'different-poll-id', status: 'completed' });
@@ -78,7 +96,7 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname === '/v1/videos/cover-remote-2') {
     return Response.json({ status: 'completed', url: vendor + '/image.png' });
   }
-  if (url.pathname === '/v1/videos/cover-remote-3') {
+  if (url.pathname === '/v1/videos/unreadable') {
     return Response.json({ status: 'failed', error: { message: 'Unable to download content from the provided URL before the timeout.' } });
   }
   if (url.pathname === '/image.png' || url.pathname === originalRemotePath + '/content') {
@@ -115,8 +133,12 @@ try {
   await startFilmCoverGenerationAfterReadiness();
   const identity = { instanceId: 'worker', fence: 1 };
   registerExecutionInstance(db, { ...identity, deploymentId });
-  const runtime = createExecutionFacade({ db, deploymentId,
-    journal: createExecutionJournal({ deploymentId, directory: path.join(root, 'storage', 'execution-journal') }),
+  const journal = createExecutionJournal({ deploymentId, directory: path.join(root, 'storage', 'execution-journal') });
+  let interruptReceipt = false;
+  const runtime = createExecutionFacade({ db, deploymentId, journal,
+    faults: { beforeReceiptDatabase() {
+      if (interruptReceipt) { interruptReceipt = false; throw new Error('fixture: interrupted receipt write'); }
+    } },
     actorAllowed: () => true, scopeAllowed: () => true, maintenance: () => false });
   await runtime.lifecycle.start({ ...identity, deploymentId, signal: controller.signal });
   let coverAdmissionChecks = 0;
@@ -214,10 +236,81 @@ try {
   assert.equal(charged.actorId, 'owner');
   assert.equal(charged.actualMinor, 49, '成功候选使用冻结价格结算');
   assert.deepEqual(sentReferenceHosts, [cosOrigin], 'Flare 参考图优先使用验证可读的 COS 源站');
+
+  const usageCount = db.prepare('SELECT COUNT(*) FROM usage_ledger WHERE executionAttemptId=?').pluck();
+  const nextAttempt = db.prepare('SELECT nextAttemptAt FROM one_click_film_cover_assets WHERE id=?').pluck();
+  submitMode = 'ambiguous';
+  const beforeAmbiguous = posts;
+  const ambiguous = await queue('cover-ambiguous');
+  await waitFor(() => candidate(ambiguous.id)?.submissionUnconfirmed);
+  const ambiguousAttempt = readOperation(db, operationId(ambiguous.id)!).currentAttemptId!;
+  const past = new Date(Date.now() - 16 * 60_000).toISOString();
+  db.prepare('UPDATE execution_attempts SET createdAt=? WHERE id=?').run(past, ambiguousAttempt);
+  expeditePoll.run(past, ambiguous.id);
+  await waitFor(() => nextAttempt.get(ambiguous.id) !== past);
+  assert.equal(candidate(ambiguous.id)?.status, 'running', '超时的待核对提交继续等待迟到回执');
+  assert.ok(nextAttempt.get(ambiguous.id));
+  assert.equal(readAttempt(db, ambiguousAttempt).costState, 'reserved');
+  await runtime.facade.reconcile({ attemptId: ambiguousAttempt, source: 'operator', evidence: { kind: 'remote_id', remoteId: 'late-cover' } });
+  expeditePoll.run(past, ambiguous.id);
+  await waitFor(() => candidate(ambiguous.id)?.status === 'ready');
+  assert.equal(latePolls, 1);
+  assert.equal(posts - beforeAmbiguous, 1);
+  assert.equal(readAttempt(db, ambiguousAttempt).costState, 'settled');
+  assert.equal(usageCount.get(ambiguousAttempt), 1);
+
+  const absent = await queue('cover-confirmed-absent');
+  await waitFor(() => candidate(absent.id)?.submissionUnconfirmed);
+  const absentAttempt = readOperation(db, operationId(absent.id)!).currentAttemptId!;
+  await runtime.facade.reconcile({ attemptId: absentAttempt, source: 'operator', evidence: { kind: 'confirmed_not_created' } });
+  expeditePoll.run(past, absent.id);
+  await waitFor(() => candidate(absent.id)?.status === 'failed');
+  assert.equal(readAttempt(db, absentAttempt).costState, 'released');
+  assert.equal(posts - beforeAmbiguous, 2, '确认未创建后释放预留且不重提');
+
+  submitMode = 'direct';
+  const beforeDirect = posts;
+  const direct = await queue('cover-direct');
+  await waitFor(() => candidate(direct.id)?.message?.includes('暂时无法保存图片'));
+  assert.equal(candidate(direct.id)?.status, 'running', '同步出图首次下载失败后继续交付原图');
+  const directAttempt = readOperation(db, operationId(direct.id)!).currentAttemptId!;
+  assert.equal(readAttempt(db, directAttempt).remoteId, null);
+  assert.equal(readAttempt(db, directAttempt).costState, 'settled');
+  assert.equal(directDownloads, 1);
+  assert.doesNotMatch(JSON.stringify(candidate(direct.id)), /fixture-private-delivery/);
+  const savedUrl = db.prepare('SELECT deliveryUrl FROM one_click_film_cover_assets WHERE id=?').pluck();
+  assert.equal(savedUrl.get(direct.id), directUrl, '后续调度从数据库恢复交付地址');
+  assert.equal((await queue('cover-direct')).id, direct.id);
+  expeditePoll.run(past, direct.id);
+  await waitFor(() => candidate(direct.id)?.status === 'ready');
+  const directPath = runWithAccessContext(owner, () => resolveGeneratedFilmCoverPath(db, run, 'entry', direct.id));
+  assert.ok(directPath && (await sharp(directPath).metadata()).format === 'png');
+  assert.equal(savedUrl.get(direct.id), null);
+  assert.equal(directDownloads, 2);
+  assert.equal(posts - beforeDirect, 1);
+  assert.equal(readAttempt(db, directAttempt).actualMinor, 49);
+  assert.equal(usageCount.get(directAttempt), 1);
+  assert.doesNotMatch(JSON.stringify(journal.scan()), /fixture-private-delivery/);
+
+  submitMode = 'direct-with-id';
+  interruptReceipt = true;
+  const interrupted = await queue('cover-interrupted-receipt');
+  await waitFor(() => candidate(interrupted.id)?.message?.includes('暂时无法保存图片'));
+  const interruptedAttempt = readOperation(db, operationId(interrupted.id)!).currentAttemptId!;
+  assert.equal(readAttempt(db, interruptedAttempt).submissionState, 'maybe_sent');
+  expeditePoll.run(past, interrupted.id);
+  await waitFor(() => candidate(interrupted.id)?.status === 'ready');
+  assert.equal(readAttempt(db, interruptedAttempt).costState, 'settled');
+  assert.equal(savedUrl.get(interrupted.id), null);
+  assert.equal(usageCount.get(interruptedAttempt), 1);
+  assert.equal(posts - beforeDirect, 2, '回执写入中断、下载地址过期后按原任务编号取图');
+
+  submitMode = 'unreadable';
+  const beforeUnreadable = posts;
   const unreadable = await queue('cover-unreadable-ref', ['sofa']);
   await waitFor(() => candidate(unreadable.id)?.status === 'failed');
   assert.match(candidate(unreadable.id)?.message ?? '', /供应商下载参考图超时/);
-  assert.equal(posts, 3, '供应商确认取图失败后不自动重提');
+  assert.equal(posts - beforeUnreadable, 1, '供应商确认取图失败后不自动重提');
   console.log('one-click-film cover generation tests passed');
 } finally {
   await stopFilmCoverGeneration();
