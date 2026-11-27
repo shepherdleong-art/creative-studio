@@ -370,9 +370,16 @@ export function admitOperation(
       ? [...actors.filter((actor) => actor > state.cursorActorId!), ...actors.filter((actor) => actor <= state.cursorActorId!)]
       : actors;
     const reasons: AdmissionWaitReason[] = [];
+    // A module worker competes with every member using the same pools. Work
+    // in an independent pool can proceed on its own dispatcher.
+    const competingPools = instance.module && !requested ? new Set(demandRows(run)
+      .filter(row => row.module === instance.module && (row.status === 'pending' || row.status === 'deferred'))
+      .flatMap(row => row.requiredPools)) : undefined;
     for (const actorId of ordered) {
       const waiting = requested ? [] : waitingRowsByActor(run).get(actorId) ?? [];
-      const rows = requested ? [requested] : instance.module ? waiting.filter(row => row.module === instance.module) : waiting;
+      const rows = requested ? [requested] : competingPools
+        ? waiting.filter(row => row.module === instance.module || row.requiredPools.some(pool => competingPools.has(pool)))
+        : waiting;
       if (rows.length === 0) continue;
       const policy = readPolicy(run, actorId);
       const evaluations: AdmissionEvaluation[] = rows.map((operation) => ({
@@ -423,6 +430,7 @@ export function admitOperation(
         );
         continue;
       }
+      if (instance.module && chosen.operation.module !== instance.module) return { kind: 'idle' };
       // 决策阶段只搬运轻量字段；完整输入只在真正授予时按 ID 读取一次。
       const operation = readOperation(options.db, chosen.operation.id);
       writeAdmissionPriority(options, operation.id, chosen.priority);
