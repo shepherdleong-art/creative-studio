@@ -161,6 +161,19 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
   const hasCanvases = canvases.length > 0;
   const noMatches = hasCanvases && filteredCanvases.length === 0;
 
+  const canvasTitle = (canvas: CanvasSummaryDto) => {
+    const owner = role === 'admin' ? canvas.ownerDisplayName ?? '归属未知' : null;
+    return (
+      <span
+        className="flex min-w-0 flex-1 items-baseline gap-1 font-medium text-ink"
+        title={owner ? `${canvas.name}（${owner}）` : canvas.name}
+      >
+        <span className="truncate">{canvas.name}</span>
+        {owner && <span className="max-w-[50%] shrink-0 truncate text-label font-normal text-ink-secondary">（{owner}）</span>}
+      </span>
+    );
+  };
+
   const deleteButton = (canvas: CanvasSummaryDto) => (
     <button
       type="button"
@@ -333,7 +346,7 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
                         <div className="grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-control)] bg-group text-ink-tertiary">
                           <Icon name="image" size={14} />
                         </div>
-                        <span className="truncate font-medium text-ink" title={canvas.name}>{canvas.name}</span>
+                        {canvasTitle(canvas)}
                       </div>
                     </td>
                     <td className="tnum text-ink-secondary">{canvas.nodeCount} 个节点</td>
@@ -361,7 +374,7 @@ export default function CanvasListPage({ role }: { role?: WorkspaceRole }) {
                       </div>
                     )}
                   </div>
-                  <div className="mt-2 truncate text-[13px] font-medium text-ink" title={canvas.name}>{canvas.name}</div>
+                  <div className="mt-2 text-[13px]">{canvasTitle(canvas)}</div>
                 </Link>
                 <div className="flex items-center justify-between gap-1">
                   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-label text-ink-tertiary">

@@ -40,6 +40,7 @@ export interface CanvasRecord {
 export interface CanvasSummary {
   id: string;
   name: string;
+  ownerDisplayName?: string;
   graphRevision: number;
   nodeCount: number;
   createdAt: string;
@@ -138,24 +139,27 @@ export function createCanvas(
 
 export function listCanvases(db: Database.Database): CanvasSummary[] {
   const access = requireAccessContext();
+  const isTeamAdmin = access.kind === 'team' && access.actor.role === 'admin';
   const visibility = access.kind === 'local'
     ? { sql: '', params: [] }
     : {
-        sql: ` WHERE EXISTS (
-          SELECT 1 FROM team_resource_scopes scope
-          WHERE scope.resourceType = 'canvas' AND scope.resourceId = creative_canvases.id
-            AND scope.deletedAt IS NULL ${access.actor.role === 'admin' ? '' : 'AND scope.ownerUserId = ?'}
-        )`,
-        params: access.actor.role === 'admin' ? [] : [access.actor.userId],
+        sql: `JOIN team_resource_scopes scope ON scope.resourceType = 'canvas' AND scope.resourceId = c.id
+          AND scope.deletedAt IS NULL
+          ${isTeamAdmin ? 'LEFT JOIN team_users owner ON owner.id = scope.ownerUserId' : 'AND scope.ownerUserId = ?'}`,
+        params: isTeamAdmin ? [] : [access.actor.userId],
       };
-  const rows = db.prepare(
-    `SELECT id, name, graphRevision, graphJson, createdAt, updatedAt FROM creative_canvases${visibility.sql} ORDER BY updatedAt DESC`,
-  ).all(...visibility.params) as Array<Record<string, unknown>>;
+  const rows = db.prepare(`
+    SELECT c.id, c.name, c.graphRevision, c.graphJson, c.createdAt, c.updatedAt
+      ${isTeamAdmin ? ", COALESCE(NULLIF(TRIM(owner.displayName), ''), owner.employeeId) AS ownerDisplayName" : ''}
+    FROM creative_canvases c ${visibility.sql}
+    ORDER BY c.updatedAt DESC
+  `).all(...visibility.params) as Array<Record<string, unknown>>;
   return rows.map((row) => {
     const graph = readGraph(String(row.graphJson));
     return {
       id: String(row.id),
       name: String(row.name),
+      ...(typeof row.ownerDisplayName === 'string' && { ownerDisplayName: row.ownerDisplayName }),
       graphRevision: Number(row.graphRevision),
       nodeCount: graph.nodes.length,
       createdAt: String(row.createdAt),
@@ -358,13 +362,12 @@ export function renameCanvas(
 export function saveCanvasViewport(
   db: Database.Database,
   params: { canvasId: string; viewport: unknown; now?: () => Date },
-): CanvasRecord {
+): void {
   const access = requireAccessContext();
   if (access.kind === 'team') access.assertAccess('canvas', params.canvasId, 'write');
-  requireCanvas(db, params.canvasId);
-  db.prepare(`UPDATE creative_canvases SET viewportJson = ?, updatedAt = ? WHERE id = ?`)
+  const update = db.prepare(`UPDATE creative_canvases SET viewportJson = ?, updatedAt = ? WHERE id = ?`)
     .run(JSON.stringify(parseViewport(params.viewport)), (params.now ?? (() => new Date()))().toISOString(), params.canvasId);
-  return requireCanvas(db, params.canvasId);
+  if (!update.changes) throw new CanvasError('not_found', '画布不存在。');
 }
 
 /** 服务端专用：绑定节点当前活跃任务（P2 planner 使用）。 */

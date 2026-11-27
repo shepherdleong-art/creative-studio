@@ -51,8 +51,9 @@ export function useCanvasHistory(options: {
       return;
     }
     lastCoalesceRef.current = coalesceKey ? { key: coalesceKey, at: now } : null;
-    pushHistorySnapshot({ nodes: cloneNodes(options.currentSnapshot().nodes), edges: cloneEdges(options.currentSnapshot().edges) });
-  }, [options, pushHistorySnapshot]);
+    const snapshot = currentSnapshot();
+    pushHistorySnapshot({ nodes: cloneNodes(snapshot.nodes), edges: cloneEdges(snapshot.edges) });
+  }, [currentSnapshot, pushHistorySnapshot]);
 
   const undo = useCallback(() => {
     const entry = past.at(-1);

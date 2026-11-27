@@ -647,6 +647,20 @@ base('workspace-sidebar', '左侧分组侧栏 + 头像菜单', 'ui-05', {
   }),
 
   // ---------- 管理员侧 ----------
+  base('admin-canvas', '创作画布归属（管理员）', 'ui-14', {
+    audience: 'admin',
+    href: () => '/canvas',
+    skipUnless: 'canvasList',
+    ready: async (page) => {
+      await page.getByRole('link', { name: /画布删除验收/ })
+        .getByText('（界面验收员工）', { exact: true }).waitFor({ timeout: 60_000 });
+    },
+    actions: [async (page) => {
+      await page.getByRole('button', { name: '表格', exact: true }).click();
+      await page.getByRole('row').filter({ hasText: '画布删除验收' })
+        .getByText('（界面验收员工）', { exact: true }).waitFor();
+    }],
+  }),
   // 12 号票：运行总览 + 全员任务。ready 等的是「这一屏真的画出来」的落点：
   // 数量卡的固定标题 + 最近任务表/空状态；全员任务等筛选栏与结果说明。
   base('admin-overview', '运行总览（管理员）', 'ui-12', {

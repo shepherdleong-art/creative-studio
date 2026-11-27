@@ -181,6 +181,22 @@ function graphPayload(extraNodeData: Record<string, unknown> = {}) {
   const readCanvas = (await body(read)).canvas as Record<string, unknown>;
   assert.equal(readCanvas.graphRevision, 1);
   assert.deepEqual(readCanvas.viewport, { x: 10, y: 20, zoom: 0.8 });
+
+  const runtimeView = await canvasItemRoute.GET(new Request('http://127.0.0.1/api/canvas/x?view=runtime'), params({ id: canvasId }));
+  assert.deepEqual((await body(runtimeView)).canvas, {
+    nodeStates: readCanvas.nodeStates, tasks: readCanvas.tasks, nodeCandidates: readCanvas.nodeCandidates,
+  });
+  const viewport = { x: 40, y: 60, zoom: 0.5 };
+  const moved = await canvasItemRoute.PATCH(new Request('http://127.0.0.1/api/canvas/x', {
+    method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ viewport }),
+  }), params({ id: canvasId }));
+  assert.equal(moved.status, 204);
+  assert.equal(await moved.text(), '');
+  const restored = await canvasItemRoute.GET(new Request('http://127.0.0.1/api/canvas/x'), params({ id: canvasId }));
+  const restoredCanvas = (await body(restored)).canvas as Record<string, unknown>;
+  assert.deepEqual(restoredCanvas.viewport, viewport);
+  assert.equal(restoredCanvas.graphRevision, readCanvas.graphRevision);
+  assert.deepEqual(restoredCanvas.graph, readCanvas.graph);
 }
 
 {
@@ -263,7 +279,7 @@ function graphPayload(extraNodeData: Record<string, unknown> = {}) {
 // --- 素材导入与 Range 读取 ----------------------------------------------------
 
 let assetId = '';
-const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#123456' } }).png().toBuffer();
+const assetBytes = await sharp({ create: { width: 640, height: 480, channels: 3, background: '#123456' } }).png().toBuffer();
 
 {
   const form = new FormData();
@@ -276,7 +292,7 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   const asset = (await body(upload)).asset as Record<string, unknown>;
   assetId = String(asset.id);
   assert.equal(asset.mediaKind, 'image');
-  assert.equal(asset.width, 16);
+  assert.equal(asset.width, 640);
 
   const missingFile = await canvasAssetsRoute.POST(new Request('http://127.0.0.1/api/canvas/x/assets', {
     method: 'POST',
@@ -297,6 +313,21 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
   assert.equal(full.status, 200);
   assert.equal(full.headers.get('accept-ranges'), 'bytes');
   assert.deepEqual(Buffer.from(await full.arrayBuffer()), assetBytes);
+
+  const thumbnailUrl = `http://127.0.0.1/api/canvas/assets/${assetId}?thumbnail=1`;
+  const getThumbnail = () => canvasAssetItemRoute.GET(new Request(thumbnailUrl), params({ assetId }));
+  const [first, concurrent] = await Promise.all([getThumbnail(), getThumbnail()]);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('Content-Type'), 'image/webp');
+  assert.notEqual(first.headers.get('etag'), full.headers.get('etag'));
+  const thumbnail = Buffer.from(await first.arrayBuffer());
+  assert.deepEqual(Buffer.from(await concurrent.arrayBuffer()), thumbnail);
+  const metadata = await sharp(thumbnail).metadata();
+  assert.deepEqual([metadata.width, metadata.height], [160, 120]);
+  const cached = await canvasAssetItemRoute.GET(new Request(thumbnailUrl, {
+    headers: { 'If-None-Match': first.headers.get('etag')! },
+  }), params({ assetId }));
+  assert.equal(cached.status, 304);
 
   const download = await canvasAssetItemRoute.GET(
     new Request(`http://127.0.0.1/api/canvas/assets/${assetId}?download=1`), params({ assetId }),
@@ -324,6 +355,24 @@ const assetBytes = await sharp({ create: { width: 16, height: 16, channels: 3, b
     params({ assetId: 'ghost' }),
   );
   assert.equal(missing.status, 404);
+}
+
+{
+  const { runFfmpeg } = await import('../lib/ffmpeg.ts');
+  const video = path.join(root, '竖屏.mp4');
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=blue:s=240x320:r=1:d=1', '-c:v', 'libx264', '-y', video], { timeoutMs: 15_000 });
+  const form = new FormData();
+  form.append('file', new File([new Uint8Array(fs.readFileSync(video))], '竖屏.mp4', { type: 'video/mp4' }));
+  const upload = await canvasAssetsRoute.POST(new Request('http://127.0.0.1/api/canvas/x/assets', {
+    method: 'POST', body: form,
+  }), params({ id: canvasId }));
+  assert.equal(upload.status, 201);
+  const { asset } = await upload.json();
+  const poster = await canvasAssetItemRoute.GET(new Request(`http://127.0.0.1/api/canvas/assets/${asset.id}?thumbnail=1`),
+    params({ assetId: asset.id }));
+  assert.equal(poster.status, 200);
+  const metadata = await sharp(Buffer.from(await poster.arrayBuffer())).metadata();
+  assert.deepEqual([metadata.format, metadata.width, metadata.height], ['webp', 120, 160]);
 }
 
 // --- 完整复制 -----------------------------------------------------------------

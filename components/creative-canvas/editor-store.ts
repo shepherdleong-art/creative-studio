@@ -29,8 +29,6 @@ import { nodeKindSpec } from '@/lib/creative-canvas/node-kinds';
 import type {
   CanvasGenerationMode,
   CanvasGraph,
-  CanvasGraphEdge,
-  CanvasGraphNode,
   CanvasMediaKind,
   CanvasNodeKind,
   CanvasParameterValue,
@@ -41,7 +39,7 @@ import {
   CanvasApiError,
   canvasApi,
   type CanvasAssetDto,
-  type CanvasDto,
+  type CanvasRuntimeDto,
   type CanvasNodeCandidateDto,
   type CanvasPlanDto,
   type CanvasTaskDto,
@@ -89,6 +87,7 @@ export interface BranchPreview {
 export interface CanvasEditorController {
   canvasId: string;
   name: string;
+  initialViewport?: CanvasViewport;
   nodes: CanvasFlowNode[];
   edges: Edge[];
   saveState: SaveState;
@@ -152,6 +151,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [name, setName] = useState('');
+  const [initialViewport, setInitialViewport] = useState<CanvasViewport>();
   const [branchPreview, setBranchPreview] = useState<BranchPreview | null>(null);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [selection, setSelection] = useState<string[]>([]);
@@ -281,7 +281,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     if (newResults.length > 0) toasts.notifyResults(newResults);
   }, [commit, toasts]);
 
-  const updateRuntimeFromCanvas = useCallback((canvas: CanvasDto) => {
+  const updateRuntimeFromCanvas = useCallback((canvas: CanvasRuntimeDto) => {
     runtime.update(canvas.nodeStates, canvas.tasks ?? [], canvas.nodeCandidates ?? []);
     const candidates = (canvas.nodeCandidates ?? []).flatMap((candidate) => [
       candidate,
@@ -307,6 +307,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       const { canvas } = await canvasApi.get(canvasId);
       resetBaseline(canvas.graphRevision);
       setName(canvas.name);
+      setInitialViewport(canvas.viewport);
       applyServerGraph(canvas.graph);
       flownAssetIdsRef.current = null;
       setSaveState('saved');
@@ -321,7 +322,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         toasts.push('error', `画布加载失败：${canvasErrorText(error)}`);
       }
     }
-  }, [applyServerGraph, canvasId, resetBaseline, runtime, setSaveState, toasts]);
+  }, [applyServerGraph, canvasId, resetBaseline, setSaveState, toasts, updateRuntimeFromCanvas]);
 
   useEffect(() => {
     // load() 的 setState 都发生在 await 之后，这里不是同步级联渲染。
@@ -333,19 +334,24 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   useEffect(() => {
     if (loadState !== 'ready') return undefined;
     let mounted = true;
+    let pending = false;
     const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
       try {
-        const { canvas } = await canvasApi.get(canvasId);
+        const { canvas } = await canvasApi.getRuntime(canvasId);
         if (!mounted) return;
         updateRuntimeFromCanvas(canvas);
         // 轮询只更新运行投影。若服务端图已在另一页面更新，保留本地图与其基准
         // revision，让下一次本地保存明确收到 409，而不是用旧图夺取新 revision。
       } catch {
         // 轮询失败不打断编辑；下一轮继续。
+      } finally {
+        pending = false;
       }
     }, POLL_INTERVAL_MS);
     return () => { mounted = false; clearInterval(timer); };
-  }, [canvasId, loadState, runtime]);
+  }, [canvasId, loadState, updateRuntimeFromCanvas]);
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasFlowNode>[]) => {
     const dragging = changes.some((change) => change.type === 'position' && change.dragging === true);
@@ -583,7 +589,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
         ...(options?.variantCount && options.variantCount > 1 ? { variantCount: options.variantCount } : {}),
       });
       toasts.push('success', '任务已提交，等待调度。');
-      const { canvas } = await canvasApi.get(canvasId);
+      const { canvas } = await canvasApi.getRuntime(canvasId);
       updateRuntimeFromCanvas(canvas);
     } catch (error) {
       toasts.push('error', `启动失败：${canvasErrorText(error)}`);
@@ -603,7 +609,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
     }
     toasts.push('success', '正式版任务已提交，完成后会出现在样片右侧。');
     try {
-      const { canvas } = await canvasApi.get(canvasId);
+      const { canvas } = await canvasApi.getRuntime(canvasId);
       updateRuntimeFromCanvas(canvas);
     } catch { /* The accepted task is durable; polling/reopening will recover it. */ }
     return true;
@@ -651,7 +657,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
       });
       setBranchPreview(null);
       toasts.push('success', '分支已启动。');
-      const { canvas } = await canvasApi.get(canvasId);
+      const { canvas } = await canvasApi.getRuntime(canvasId);
       updateRuntimeFromCanvas(canvas);
     } catch (error) {
       toasts.push('error', `分支启动失败：${canvasErrorText(error)}`);
@@ -673,6 +679,7 @@ export function useCanvasEditor(canvasId: string): CanvasEditorController {
   return {
     canvasId,
     name,
+    initialViewport,
     nodes,
     edges,
     saveState: pipeline.saveState,

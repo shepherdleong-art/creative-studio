@@ -36,6 +36,7 @@ export interface CanvasPreviewDto {
 export interface CanvasSummaryDto {
   id: string;
   name: string;
+  ownerDisplayName?: string;
   graphRevision: number;
   nodeCount: number;
   createdAt: string;
@@ -100,6 +101,8 @@ export interface CanvasDto {
   tasks: CanvasTaskDto[];
   nodeCandidates: CanvasNodeCandidateDto[];
 }
+
+export type CanvasRuntimeDto = Pick<CanvasDto, 'nodeStates' | 'tasks' | 'nodeCandidates'>;
 
 export interface PlanInputDto {
   refId: string;
@@ -192,6 +195,7 @@ export const canvasApi = {
     body: JSON.stringify({ name }),
   }),
   get: (canvasId: string) => request<{ canvas: CanvasDto }>(`/api/canvas/${canvasId}`),
+  getRuntime: (canvasId: string) => request<{ canvas: CanvasRuntimeDto }>(`/api/canvas/${canvasId}?view=runtime`),
   delete: (canvasId: string) => request<{ success: true }>(`/api/canvas/${encodeURIComponent(canvasId)}`, {
     method: 'DELETE',
   }),
@@ -202,8 +206,8 @@ export const canvasApi = {
     `/api/canvas/${canvasId}`,
     { method: 'PATCH', body: JSON.stringify(body) },
   ),
-  saveViewport: (canvasId: string, viewport: CanvasViewport) => request<{ canvas: CanvasDto }>(
-    `/api/canvas/${canvasId}`, { method: 'PATCH', body: JSON.stringify({ viewport }) },
+  saveViewport: (canvasId: string, viewport: CanvasViewport) => request<void>(
+    `/api/canvas/${canvasId}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ viewport }) },
   ),
   rename: (canvasId: string, name: string) => request<{ canvas: CanvasDto }>(`/api/canvas/${canvasId}`, {
     method: 'PATCH',
@@ -283,4 +287,8 @@ export const canvasApi = {
 
 export function canvasAssetUrl(assetId: string): string {
   return `/api/canvas/assets/${assetId}`;
+}
+
+export function canvasAssetThumbnailUrl(assetId: string): string {
+  return `${canvasAssetUrl(assetId)}?thumbnail=1`;
 }

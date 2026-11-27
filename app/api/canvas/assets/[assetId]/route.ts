@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { CanvasError } from '@/lib/creative-canvas/errors';
 import { canvasAssetAbsolutePath, canvasStorageRoot, requireCanvasAsset } from '@/lib/creative-canvas/assets';
 import { canvasAssetDownloadFilename } from '@/lib/creative-canvas/asset-naming';
+import { materializeCanvasThumbnail } from '@/lib/creative-canvas/thumbnail';
 import { assertCanvasApiReady, canvasJsonError } from '@/lib/creative-canvas/http';
 import { BrowserPreviewPendingError, ensureBrowserPreview } from '@/lib/video-browser-preview';
 import { fileResponse } from '@/lib/media-core/file-response';
@@ -20,9 +21,15 @@ async function __teamRouteGET(
     const { assetId } = await params;
     const db = getDb();
     const asset = requireCanvasAsset(db, assetId);
-    const originalPath = canvasAssetAbsolutePath(asset, canvasStorageRoot(dataRoot()));
+    const storageRoot = canvasStorageRoot(dataRoot());
+    const query = new URL(request.url).searchParams;
+    const download = query.get('download') === '1';
+    if (!download && query.get('thumbnail') === '1') {
+      const thumbnail = await materializeCanvasThumbnail(storageRoot, asset);
+      return fileResponse(request, thumbnail, 'image/webp', { cacheControl: 'private, max-age=3600' });
+    }
+    const originalPath = canvasAssetAbsolutePath(asset, storageRoot);
     const originalGrant = authorizeManagedFileRead(originalPath);
-    const download = new URL(request.url).searchParams.get('download') === '1';
     let served = originalPath;
     let mimeType = asset.mimeType;
     if (!download && asset.mediaKind === 'video') {

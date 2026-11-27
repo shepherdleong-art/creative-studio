@@ -83,7 +83,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   const controller = useCanvasEditor(canvasId);
   const toasts = useCanvasToasts();
   const { screenToFlowPosition, fitView, getViewport, setViewport, setCenter } = useReactFlow();
-  const [initialViewport, setInitialViewport] = useState<{ x: number; y: number; zoom: number } | undefined>();
+  const initialViewport = controller.initialViewport;
   const [capabilities, setCapabilities] = useState<CanvasModelCapabilityDto[]>([]);
   const [executor, setExecutor] = useState<string>('disabled');
   const [logTarget, setLogTarget] = useState<{ canvasId: string; jobId?: string } | null>(null);
@@ -120,10 +120,6 @@ function EditorInner({ canvasId }: { canvasId: string }) {
   const latestViewportRef = useRef<CanvasViewport | null>(null);
   const viewportSaveVersionRef = useRef(0);
   const viewportSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
-  useEffect(() => {
-    void canvasApi.get(canvasId).then(({ canvas }) => setInitialViewport(canvas.viewport)).catch(() => undefined);
-  }, [canvasId]);
-
   useEffect(() => {
     if (!initialViewport || viewportInteractedRef.current || viewportRestoreRef.current) return undefined;
     viewportRestoreRef.current = true;
@@ -195,7 +191,7 @@ function EditorInner({ canvasId }: { canvasId: string }) {
       const viewport = latestViewportRef.current ?? getViewport();
       void fetch(`/api/canvas/${canvasId}`, {
         method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', Prefer: 'return=minimal' },
         body: JSON.stringify({ viewport }),
         keepalive: true,
       });

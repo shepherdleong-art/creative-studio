@@ -23,7 +23,7 @@ import {
   updateCanvasParameter,
 } from '@/lib/creative-canvas/unified-image-options';
 import type { CanvasGenerationMode, CanvasNodeKind, CanvasReferenceSlot } from '@/lib/creative-canvas/types';
-import { canvasApi, canvasAssetUrl } from './api';
+import { canvasApi, canvasAssetThumbnailUrl, canvasAssetUrl } from './api';
 import type { CanvasFlowNode, CanvasEditorController } from './editor-store';
 import { useNodeRuntime } from './runtime-store';
 import { CanvasNodeContext } from './node-context';
@@ -426,6 +426,8 @@ export const MaterialNode = memo(function MaterialNode({ id, data, selected, pos
                 <img
                   src={canvasAssetUrl(assetId)}
                   alt="素材"
+                  loading="lazy"
+                  decoding="async"
                   className="block h-auto max-h-80 w-auto max-w-full rounded-lg"
                   data-testid="material-image"
                 />
@@ -691,11 +693,9 @@ function CanvasPromptInput({ nodeId, data, field }: {
           onMouseDown={(event) => { event.preventDefault(); pickMention(option); }}
           onMouseEnter={() => setMentionIndex(index)}
         >
-          {option.assetId && option.mediaKind === 'image'
-            ? <img src={canvasAssetUrl(option.assetId)} alt="" className="sc-canvas-mention-thumb" />
-            : option.assetId && option.mediaKind === 'video'
-              ? <video src={canvasAssetUrl(option.assetId)} muted playsInline preload="metadata" className="sc-canvas-mention-thumb" />
-              : <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">{option.kindLabel}</span>}
+          {option.assetId && (option.mediaKind === 'image' || option.mediaKind === 'video')
+            ? <img src={canvasAssetThumbnailUrl(option.assetId)} alt="" decoding="async" className="sc-canvas-mention-thumb" />
+            : <span className="sc-canvas-mention-thumb sc-canvas-mention-thumb-text">{option.kindLabel}</span>}
           <span className="min-w-0 flex-1 truncate">{option.title}</span>
           <span className="sc-canvas-mention">@参考{option.label}</span>
         </button>)}
@@ -725,15 +725,16 @@ function ReferenceRow({
     (next) => controller.updateReference(nodeId, slot.refId, { note: next }),
     [controller, nodeId, slot.refId],
   ));
+  const isAudio = controller.nodes.find((node) => node.id === slot.sourceNodeId)?.data.mediaKind === 'audio';
   return (
     <div className="sc-canvas-reference" data-reference={slot.label}>
       <div className="flex items-center gap-2">
         <span className="sc-canvas-mention">@参考{slot.label}</span>
-        {assetId ? (
-          <img src={canvasAssetUrl(assetId)} alt="" className="h-8 w-8 rounded object-cover" />
+        {assetId && !isAudio ? (
+          <img src={canvasAssetThumbnailUrl(assetId)} alt="" loading="lazy" decoding="async" className="h-8 w-8 rounded object-cover" />
         ) : (
           <span className="flex h-8 w-8 items-center justify-center rounded bg-surface-subtle text-[10px] text-ink-tertiary">
-            {slot.sourceKind === 'text' ? '文本' : '—'}
+            {isAudio ? '音频' : slot.sourceKind === 'text' ? '文本' : '—'}
           </span>
         )}
         <input

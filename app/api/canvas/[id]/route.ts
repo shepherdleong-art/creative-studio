@@ -30,6 +30,12 @@ function canvasView(canvasId: string) {
     viewport: canvas.viewport,
     createdAt: canvas.createdAt,
     updatedAt: canvas.updatedAt,
+    ...canvasRuntimeView(canvasId),
+  };
+}
+
+function canvasRuntimeView(canvasId: string) {
+  return {
     nodeStates: listCanvasNodeStates(getDb(), canvasId),
     // 节点状态要显示真实阶段（排队／生成／下载），所以带上本画布的近期任务
     tasks: listCanvasTasks(getDb(), { canvasId, limit: 100 }).map((task) => ({
@@ -57,12 +63,18 @@ function canvasView(canvasId: string) {
 }
 
 async function __teamRouteGET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     await assertCanvasApiReady();
     const { id } = await params;
+    if (new URL(request.url).searchParams.get('view') === 'runtime') {
+      if (!getDb().prepare('SELECT 1 FROM creative_canvases WHERE id = ?').get(id)) {
+        throw new CanvasError('not_found', '画布不存在。');
+      }
+      return NextResponse.json({ canvas: canvasRuntimeView(id) });
+    }
     return NextResponse.json({ canvas: canvasView(id) });
   } catch (error) {
     return canvasJsonError(error);
@@ -110,8 +122,9 @@ async function __teamRoutePATCH(
     }
 
     if (body.viewport !== undefined) {
-      const canvas = saveCanvasViewport(getDb(), { canvasId: id, viewport: body.viewport });
-      return NextResponse.json({ canvas: canvasView(canvas.id) });
+      saveCanvasViewport(getDb(), { canvasId: id, viewport: body.viewport });
+      if (request.headers.get('Prefer') === 'return=minimal') return new Response(null, { status: 204 });
+      return NextResponse.json({ canvas: canvasView(id) });
     }
 
     throw new CanvasError('invalid_input', '请求没有包含可保存的内容。');

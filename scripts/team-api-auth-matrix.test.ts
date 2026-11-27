@@ -305,9 +305,42 @@ try {
 
   const canvasesA = await canvasRoute.GET(get('https://studio.example.test/api/canvas', userA.cookie));
   assert.equal(canvasesA.status, 200);
-  assert.deepEqual((await canvasesA.json() as { canvases: Array<{ id: string }> }).canvases.map((canvas) => canvas.id), ['canvas-a']);
+  const employeeList = (await canvasesA.json()).canvases as Array<{ id: string; ownerDisplayName?: string }>;
+  assert.deepEqual(employeeList.map((canvas) => canvas.id), ['canvas-a']);
+  assert.equal(Object.hasOwn(employeeList[0], 'ownerDisplayName'), false);
+  const adminCanvases = await canvasRoute.GET(get('https://studio.example.test/api/canvas', admin.cookie));
+  assert.equal(adminCanvases.status, 200);
+  const adminList = (await adminCanvases.json()).canvases as Array<{ id: string; ownerDisplayName: string }>;
+  assert.deepEqual(Object.fromEntries(adminList.map((canvas) => [canvas.id, canvas.ownerDisplayName])), {
+    'canvas-a': userA.principal.displayName, 'canvas-b': userB.principal.displayName,
+  });
   assert.equal((await canvasItemRoute.GET(get('https://studio.example.test/api/canvas/canvas-b', userA.cookie), params('canvas-b'))).status, 403);
   assert.equal((await canvasItemRoute.GET(get('https://studio.example.test/api/canvas/canvas-b', admin.cookie), params('canvas-b'))).status, 200);
+  const runtimeUrl = 'https://studio.example.test/api/canvas/canvas-b?view=runtime';
+  assert.equal((await canvasItemRoute.GET(get(runtimeUrl, userA.cookie), params('canvas-b'))).status, 403);
+  const runtimeView = await canvasItemRoute.GET(get(runtimeUrl, userB.cookie), params('canvas-b'));
+  assert.equal(runtimeView.status, 200);
+  assert.deepEqual((await runtimeView.json()).canvas.tasks.map((task: { id: string }) => task.id), ['canvas-task-b']);
+
+  const { registerReadyTeamFile } = await import('../lib/team-service/files/registry.ts');
+  const canvasAssetRoute = await import('../app/api/canvas/assets/[assetId]/route.ts');
+  const storageRoot = path.join(fixtureRoot, 'storage');
+  const sourcePath = path.join(storageRoot, 'canvas/canvas-a/asset.png');
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  await sharp({ create: { width: 400, height: 300, channels: 3, background: '#468' } }).png().toFile(sourcePath);
+  const sourceFile = registerReadyTeamFile(db, { storageRoot, absolutePath: sourcePath, mimeType: 'image/png',
+    ownerUserId: userA.principal.userId, references: [{ resourceType: 'canvas_asset', resourceId: 'canvas-asset-a', role: 'input' }] });
+  const thumbUrl = 'https://studio.example.test/api/canvas/assets/canvas-asset-a?thumbnail=1';
+  const thumbParams = { params: Promise.resolve({ assetId: 'canvas-asset-a' }) };
+  for (const viewer of [admin, userA]) {
+    const thumb = await canvasAssetRoute.GET(get(thumbUrl, viewer.cookie), thumbParams);
+    assert.equal(thumb.status, 200);
+    assert.equal(thumb.headers.get('Content-Type'), 'image/webp');
+    assert.equal((await sharp(Buffer.from(await thumb.arrayBuffer())).metadata()).width, 160);
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) FROM team_files WHERE derivedFromFileId = ?').pluck().get(sourceFile.id), 1);
+  assert.equal((await canvasAssetRoute.GET(get(thumbUrl, userB.cookie), thumbParams)).status, 403);
+  assert.equal((await canvasAssetRoute.GET(get(thumbUrl), thumbParams)).status, 401);
 
   assert.equal((await providersRoute.GET(get('https://studio.example.test/api/providers', userA.cookie))).status, 403);
   assert.equal((await providersRoute.GET(get('https://studio.example.test/api/providers', admin.cookie))).status, 200);

@@ -7,7 +7,7 @@
  */
 
 import { useMemo } from 'react';
-import { canvasAssetUrl, type CanvasPreviewDto } from './api';
+import { canvasAssetThumbnailUrl, type CanvasPreviewDto } from './api';
 
 /** 各类节点的缩略估计尺寸；用户调过宽度时按宽度等比缩放高度。 */
 const KIND_BOX: Record<string, { w: number; h: number }> = {
@@ -111,14 +111,12 @@ export function CanvasThumbnail({ preview }: { preview: CanvasPreviewDto }) {
             className="absolute overflow-hidden rounded-[3px] border border-[var(--color-hairline)] bg-[var(--color-surface)]"
             style={{ left: pctX(box.x), top: pctY(box.y), width: pctW(box.w), height: pctH(box.h) }}
           >
-            {box.assetId && box.mediaKind === 'image' ? (
-              <img src={canvasAssetUrl(box.assetId)} alt="" loading="lazy" className="h-full w-full object-cover" />
-            ) : box.assetId && box.mediaKind === 'video' ? (
-              <video
-                src={canvasAssetUrl(box.assetId)}
-                muted
-                playsInline
-                preload="metadata"
+            {box.assetId && (box.mediaKind === 'image' || box.mediaKind === 'video') ? (
+              <img
+                src={canvasAssetThumbnailUrl(box.assetId)}
+                alt=""
+                loading="lazy"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
             ) : null}
